@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
     for (int i=0;i<6;++i) {
         photo::Annotation a; a.tool=photo::Tool::Text; a.color=QColor("#ff3b3b");
         a.rect=QRectF(30+(i%2)*440,65+(i/2)*110,390,80);
-        a.text=QStringLiteral("PhotoScreen 截图");
+        a.text=QStringLiteral("PhotoScreen 123");
         a.fontSize=34; a.fontWeight=weights[i];
         photo::drawAnnotation(textPainter,a);
         QFont caption=textPainter.font(); caption.setPixelSize(13); caption.setWeight(QFont::Normal);

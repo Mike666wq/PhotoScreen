@@ -22,6 +22,8 @@
 #include <QSettings>
 #include <QSlider>
 #include <QSizePolicy>
+#include <QTextCharFormat>
+#include <QTextCursor>
 #include <QTextEdit>
 #include <QTextDocument>
 #include <QAbstractTextDocumentLayout>
@@ -142,7 +144,10 @@ void CaptureOverlay::buildToolbar() {
         const QColor chosen = QColorDialog::getColor(m_color, this, QStringLiteral("标注颜色"));
         if (chosen.isValid()) {
             m_color=chosen; QSettings().setValue("annotation/color", chosen); updateColorSwatch();
-            if (m_selected>=0 && m_selected<m_document.items().size()) {
+            if (m_textEditor) {
+                m_textEditor->setStyleSheet(QStringLiteral("QTextEdit{border:0;background:rgba(255,255,255,210);color:%1;}").arg(m_color.name()));
+                applyEditorTextStyle();
+            } else if (m_selected>=0 && m_selected<m_document.items().size()) {
                 const int i=m_selected; auto item=m_document.items()[i]; item.color=chosen; m_document.replace(i,item); m_selected=i; update();
             }
         }
@@ -165,19 +170,23 @@ void CaptureOverlay::buildToolbar() {
     m_fontControl=addSlider(fontLayout,QStringLiteral("字号"),10,72,m_fontSize,&m_fontValue);
     m_fontControl->setObjectName("fontControl"); m_fontValue->setObjectName("fontValue");
     m_fontWeightControl=addSlider(fontLayout,QStringLiteral("字体粗细"),100,900,m_fontWeight,&m_fontWeightValue);
-    m_fontWeightControl->setObjectName("fontWeightControl"); m_fontWeightValue->setObjectName("fontWeightValue"); m_fontWeightControl->setSingleStep(100);
+    m_fontWeightControl->setObjectName("fontWeightControl"); m_fontWeightValue->setObjectName("fontWeightValue");
+    m_fontWeightControl->setSingleStep(100); m_fontWeightControl->setPageStep(100);
+    m_fontWeightControl->setTickPosition(QSlider::TicksBelow); m_fontWeightControl->setTickInterval(100);
     connect(m_fontControl, &QSlider::valueChanged, this, [this](int n) {
         m_fontSize=n; QSettings().setValue("annotation/fontSize",n);
         if (m_textEditor) {
-            QFont font=m_textEditor->font(); font.setPixelSize(n); m_textEditor->setFont(font); resizeTextEditor();
+            applyEditorTextStyle(); resizeTextEditor();
         } else if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool==Tool::Text) {
             const int i=m_selected; auto item=m_document.items()[i]; item.fontSize=n; resizeTextAnnotation(item); m_document.replace(i,item); m_selected=i; update();
         }
     });
     connect(m_fontWeightControl, &QSlider::valueChanged, this, [this](int n) {
+        const int snapped=qBound(100,((n+50)/100)*100,900);
+        if (n!=snapped) { m_fontWeightControl->setValue(snapped); return; }
         m_fontWeight=n; QSettings().setValue("annotation/fontWeight",n);
         if (m_textEditor) {
-            QFont font=m_textEditor->font(); font.setWeight(static_cast<QFont::Weight>(n)); m_textEditor->setFont(font); resizeTextEditor();
+            applyEditorTextStyle(); resizeTextEditor();
         } else if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool==Tool::Text) {
             const int i=m_selected; auto item=m_document.items()[i]; item.fontWeight=n; resizeTextAnnotation(item); m_document.replace(i,item); m_selected=i; update();
         }
@@ -407,9 +416,27 @@ void CaptureOverlay::startText(const QPointF &point, int existing) {
     const QColor textColor=existing>=0 ? m_document.items()[existing].color : m_color;
     m_textEditor->setStyleSheet(QStringLiteral("QTextEdit{border:0;background:rgba(255,255,255,210);color:%1;}").arg(textColor.name()));
     if (existing>=0) m_textEditor->setPlainText(m_document.items()[existing].text);
+    applyEditorTextStyle();
     connect(m_textEditor,&QTextEdit::textChanged,this,&CaptureOverlay::resizeTextEditor);
     resizeTextEditor();
     m_textEditor->installEventFilter(this); m_textEditor->show(); m_textEditor->raise(); m_textEditor->setFocus();
+}
+void CaptureOverlay::applyEditorTextStyle() {
+    if (!m_textEditor) return;
+    QFont font=m_textEditor->font();
+    font.setPixelSize(m_fontSize);
+    font.setWeight(static_cast<QFont::Weight>(m_fontWeight));
+    m_textEditor->setFont(font);
+    QTextCharFormat format;
+    format.setFont(font);
+    format.setForeground(m_color);
+    QTextCursor documentCursor(m_textEditor->document());
+    documentCursor.select(QTextCursor::Document);
+    if (documentCursor.hasSelection()) documentCursor.mergeCharFormat(format);
+    QTextCursor current=m_textEditor->textCursor();
+    current.mergeCharFormat(format);
+    m_textEditor->setCurrentCharFormat(format);
+    m_textEditor->setTextCursor(current);
 }
 void CaptureOverlay::resizeTextEditor() {
     if (!m_textEditor) return;
@@ -421,11 +448,8 @@ void CaptureOverlay::resizeTextEditor() {
     if (bounds!=m_textEditor->geometry()) m_textEditor->setGeometry(bounds);
 }
 void CaptureOverlay::resizeTextAnnotation(Annotation &annotation) const {
-    QFont font=QApplication::font();
-    if (!annotation.fontFamily.isEmpty()) font.setFamily(annotation.fontFamily);
-    font.setPixelSize(annotation.fontSize); font.setWeight(static_cast<QFont::Weight>(annotation.fontWeight));
-    QTextDocument document; document.setDocumentMargin(0); document.setDefaultFont(font);
-    document.setPlainText(annotation.text); document.setTextWidth(annotation.rect.width());
+    QTextDocument document;
+    configureTextDocument(document,annotation);
     const qreal height=qMin(qMax(24,qCeil(document.documentLayout()->documentSize().height())+2),qMax(1,qFloor(m_selection.height())));
     annotation.rect.moveTop(qBound(m_selection.top(),annotation.rect.top(),m_selection.bottom()-height));
     annotation.rect.setHeight(height);

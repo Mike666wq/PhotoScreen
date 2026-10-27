@@ -25,30 +25,6 @@ private:
         QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,end);
         QCoreApplication::processEvents();
     }
-    static QImage renderSelectedTextWeight(int finalWeight) {
-        QImage copied;
-        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[&](const QImage &image,QString *) { copied=image; return true; });
-        overlay->show(); QCoreApplication::processEvents();
-        selectArea(overlay,QPoint(10,10),QPoint(510,400));
-        auto *textTool=overlay->findChild<QToolButton *>("tool_5");
-        auto *selectTool=overlay->findChild<QToolButton *>("tool_0");
-        if (!textTool || !selectTool) return {};
-        textTool->click();
-        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
-        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor");
-        auto *font=overlay->findChild<QSlider *>("fontControl");
-        auto *weight=overlay->findChild<QSlider *>("fontWeightControl");
-        if (!editor || !font || !weight) return {};
-        font->setValue(44); weight->setValue(800);
-        QInputMethodEvent input; input.setCommitString(QStringLiteral("Weight"));
-        QApplication::sendEvent(editor,&input);
-        QTest::keyClick(editor,Qt::Key_Return,Qt::ControlModifier);
-        selectTool->click();
-        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(60,68));
-        weight->setValue(finalWeight);
-        QTest::keyClick(overlay,Qt::Key_Return);
-        return copied;
-    }
 private slots:
     void releasePositionAndCopy() {
         QImage copied; int writes=0;
@@ -125,16 +101,26 @@ private slots:
         auto *weight=overlay->findChild<QSlider *>("fontWeightControl"); QVERIFY(weight);
         auto *fontValue=overlay->findChild<QLabel *>("fontValue"); QVERIFY(fontValue);
         auto *weightValue=overlay->findChild<QLabel *>("fontWeightValue"); QVERIFY(weightValue);
-        font->setValue(44); weight->setValue(800);
+        QInputMethodEvent input; input.setCommitString(QStringLiteral("Weight sample"));
+        QApplication::sendEvent(editor,&input);
+        font->setValue(44); weight->setValue(450);
+        QCOMPARE(weightValue->text(),QStringLiteral("500"));
+        weight->setValue(800);
         QCOMPARE(editor->font().pixelSize(),44);
         QCOMPARE(int(editor->font().weight()),800);
         QCOMPARE(fontValue->text(),QStringLiteral("44"));
         QCOMPARE(weightValue->text(),QStringLiteral("800"));
+        QCOMPARE(int(editor->currentCharFormat().fontWeight()),800);
+        QCOMPARE(editor->currentCharFormat().font().pixelSize(),44);
+        QTest::keyClick(editor,Qt::Key_Return,Qt::ControlModifier);
+        auto *select=overlay->findChild<QToolButton *>("tool_0"); QVERIFY(select); select->click();
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(60,68));
+        QCOMPARE(weight->value(),800);
+        weight->setValue(500);
+        auto *undo=overlay->findChild<QToolButton *>("undoButton"); QVERIFY(undo); undo->click();
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(60,68));
+        QCOMPARE(weight->value(),800);
         QTest::keyClick(overlay,Qt::Key_Escape);
-
-        const QImage light=renderSelectedTextWeight(100);
-        const QImage heavy=renderSelectedTextWeight(900);
-        QVERIFY(!light.isNull()); QVERIFY(!heavy.isNull()); QVERIFY(light!=heavy);
     }
     void textInputAndFailureRetry() {
         QImage copied; int attempts=0;

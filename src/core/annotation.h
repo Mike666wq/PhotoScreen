@@ -8,6 +8,8 @@
 #include <QVector>
 #include <QUndoStack>
 
+class QTextDocument;
+
 namespace photo {
 enum class Tool { Select, Rectangle, Ellipse, Arrow, Pen, Text, Mosaic };
 struct Annotation {
@@ -37,6 +39,7 @@ private:
     QUndoStack m_undo;
 };
 void drawAnnotation(QPainter &painter, const Annotation &annotation);
+void configureTextDocument(QTextDocument &document, const Annotation &annotation);
 QPainterPath arrowPath(const Annotation &annotation);
 bool annotationContains(const Annotation &annotation, const QPointF &point, qreal tolerance = 5);
 QImage renderSelection(const QImage &source, const QSizeF &logicalSize,

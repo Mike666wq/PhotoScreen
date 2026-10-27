@@ -35,6 +35,7 @@ private:
     void positionToolbar();
     void setTool(Tool tool);
     void startText(const QPointF &point, int existing = -1);
+    void applyEditorTextStyle();
     void resizeTextEditor();
     void resizeTextAnnotation(Annotation &annotation) const;
     void commitText();

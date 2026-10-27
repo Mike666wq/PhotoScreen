@@ -3,6 +3,7 @@
 #include <QPainter>
 #include <QPainterPathStroker>
 #include <QApplication>
+#include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QUndoCommand>
@@ -90,6 +91,22 @@ void AnnotationDocument::remove(int index) {
     if (index < 0 || index >= m_items.size()) return;
     auto after = m_items; after.removeAt(index); m_undo.push(new Change(this, m_items, after));
 }
+void configureTextDocument(QTextDocument &document, const Annotation &a) {
+    QFont font=QApplication::font();
+    if (!a.fontFamily.isEmpty()) font.setFamily(a.fontFamily);
+    font.setPixelSize(a.fontSize);
+    font.setWeight(static_cast<QFont::Weight>(a.fontWeight));
+    document.setDocumentMargin(0);
+    document.setDefaultFont(font);
+    document.setPlainText(a.text);
+    document.setTextWidth(a.rect.normalized().width());
+    QTextCursor cursor(&document);
+    cursor.select(QTextCursor::Document);
+    QTextCharFormat format;
+    format.setFont(font);
+    format.setForeground(a.color);
+    cursor.mergeCharFormat(format);
+}
 void drawAnnotation(QPainter &p, const Annotation &a) {
     p.save();
     p.setRenderHint(QPainter::Antialiasing);
@@ -108,14 +125,8 @@ void drawAnnotation(QPainter &p, const Annotation &a) {
         break;
     case Tool::Text: {
         const QRectF rect=a.rect.normalized();
-        QFont font=QApplication::font();
-        if (!a.fontFamily.isEmpty()) font.setFamily(a.fontFamily);
-        font.setPixelSize(a.fontSize);
-        font.setWeight(static_cast<QFont::Weight>(a.fontWeight));
-        QTextDocument document; document.setDocumentMargin(0); document.setDefaultFont(font);
-        document.setPlainText(a.text); document.setTextWidth(rect.width());
-        QTextCursor cursor(&document); cursor.select(QTextCursor::Document);
-        QTextCharFormat format; format.setForeground(a.color); cursor.mergeCharFormat(format);
+        QTextDocument document;
+        configureTextDocument(document,a);
         p.translate(rect.topLeft()); p.setClipRect(QRectF(QPointF(0,0),rect.size()));
         document.drawContents(&p);
         break;

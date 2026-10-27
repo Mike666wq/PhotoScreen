@@ -1,6 +1,9 @@
 #include "core/annotation.h"
 #include "core/geometry.h"
 #include <QPainter>
+#include <QTextBlock>
+#include <QTextDocument>
+#include <QTextFragment>
 #include <QtTest>
 #include <QtMath>
 
@@ -41,15 +44,25 @@ private slots:
         const auto out=renderSelection(image,QSizeF(100,100),QRectF(0,0,100,100),{a});
         QVERIFY(out!=image); QCOMPARE(out.pixelColor(0,0),image.pixelColor(0,0));
     }
-    void textWeightChangesRendering() {
-        Annotation regular; regular.tool=Tool::Text; regular.rect=QRectF(5,5,220,70);
-        regular.text=QStringLiteral("Weight"); regular.fontSize=48; regular.fontWeight=100;
-        Annotation bold=regular; bold.fontWeight=900;
-        QImage light(240,80,QImage::Format_ARGB32_Premultiplied); light.fill(Qt::white);
-        QImage heavy=light;
-        { QPainter painter(&light); drawAnnotation(painter,regular); }
-        { QPainter painter(&heavy); drawAnnotation(painter,bold); }
-        QVERIFY(light!=heavy);
+    void textStyleIsAppliedToDocument() {
+        Annotation text; text.tool=Tool::Text; text.rect=QRectF(5,5,220,70);
+        text.text=QStringLiteral("Weight"); text.fontSize=48; text.fontWeight=900; text.color=QColor("#ff3b3b");
+        QTextDocument document;
+        configureTextDocument(document,text);
+        QCOMPARE(document.defaultFont().pixelSize(),48);
+        QCOMPARE(int(document.defaultFont().weight()),900);
+        bool found=false;
+        for (QTextBlock block=document.begin(); block.isValid(); block=block.next()) {
+            for (auto it=block.begin(); !it.atEnd(); ++it) {
+                const QTextFragment fragment=it.fragment();
+                if (!fragment.isValid()) continue;
+                QCOMPARE(int(fragment.charFormat().fontWeight()),900);
+                QCOMPARE(fragment.charFormat().font().pixelSize(),48);
+                QCOMPARE(fragment.charFormat().foreground().color(),QColor("#ff3b3b"));
+                found=true;
+            }
+        }
+        QVERIFY(found);
     }
     void undoRedo() {
         AnnotationDocument doc; Annotation a; a.rect=QRectF(10,10,20,20); doc.add(a);

@@ -1,0 +1,40 @@
+#pragma once
+#include <QColor>
+#include <QImage>
+#include <QPainterPath>
+#include <QPainter>
+#include <QRectF>
+#include <QString>
+#include <QVector>
+#include <QUndoStack>
+
+namespace photo {
+enum class Tool { Select, Rectangle, Ellipse, Arrow, Pen, Text, Mosaic };
+struct Annotation {
+    Tool tool = Tool::Rectangle;
+    QRectF rect;
+    QVector<QPointF> points;
+    QColor color = Qt::red;
+    qreal width = 3;
+    int fontSize = 18;
+    QString text;
+    QRectF bounds() const;
+    void translate(const QPointF &delta);
+    void setBounds(const QRectF &bounds);
+};
+class AnnotationDocument {
+public:
+    const QVector<Annotation> &items() const { return m_items; }
+    void add(const Annotation &item);
+    void replace(int index, const Annotation &item);
+    void remove(int index);
+    QUndoStack *undoStack() { return &m_undo; }
+    void setItemsForCommand(const QVector<Annotation> &items) { m_items = items; }
+private:
+    QVector<Annotation> m_items;
+    QUndoStack m_undo;
+};
+void drawAnnotation(QPainter &painter, const Annotation &annotation);
+QImage renderSelection(const QImage &source, const QSizeF &logicalSize,
+                       const QRectF &selection, const QVector<Annotation> &annotations);
+}

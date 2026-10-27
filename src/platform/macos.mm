@@ -1,4 +1,5 @@
 #include "platform.h"
+#include "macimage.h"
 #include <QBuffer>
 #include <QCoreApplication>
 #include <QDir>
@@ -44,19 +45,6 @@ QVector<QRect> windowRects() {
             result.append(QRect(qRound(rect.origin.x),qRound(rect.origin.y),qRound(rect.size.width),qRound(rect.size.height)));
     }
     CFRelease(windows); return result;
-}
-QImage imageFromCGImage(CGImageRef image) {
-    if (!image) return {};
-    const int width=int(CGImageGetWidth(image)), height=int(CGImageGetHeight(image));
-    QImage result(width,height,QImage::Format_ARGB32_Premultiplied);
-    if (result.isNull()) return {};
-    CGColorSpaceRef color=CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx=CGBitmapContextCreate(result.bits(),width,height,8,result.bytesPerLine(),color,kCGImageAlphaPremultipliedFirst|kCGBitmapByteOrder32Little);
-    CGColorSpaceRelease(color);
-    if (!ctx) return {};
-    CGContextTranslateCTM(ctx,0,height); CGContextScaleCTM(ctx,1,-1);
-    CGContextDrawImage(ctx,CGRectMake(0,0,width,height),image); CGContextRelease(ctx);
-    return result;
 }
 int macKey(Qt::Key key) {
     static const int letters[] = {0,11,8,2,14,3,5,4,34,38,40,37,46,45,31,35,12,15,1,17,32,9,13,7,16,6};

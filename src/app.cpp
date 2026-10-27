@@ -127,7 +127,7 @@ void App::beginCapture() {
                 current=current.isNull()?screen->geometry():current.united(screen->geometry());
             if (result.frame.screens.size()!=qtCount) {
                 // 临时诊断：原先这里静默放弃，用户端表现为「点了没反应」，改为可见报错定位问题。
-                const QString detail=QStringLiteral("捕获到 %1 块屏幕，但系统报告 %2 块。\nQt 屏 [%3]").arg(result.frame.screens.size()).arg(qtCount,screensSummary());
+                const QString detail=QStringLiteral("捕获到 %1 块屏幕，但系统报告 %2 块。\nQt 屏 [%3]").arg(result.frame.screens.size()).arg(qtCount).arg(screensSummary());
                 appendDiagnosticLog(QStringLiteral("屏数校验失败：")+detail);
                 QMessageBox::warning(nullptr,QStringLiteral("截图失败"),detail); return;
             }

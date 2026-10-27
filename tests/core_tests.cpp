@@ -12,11 +12,17 @@ private slots:
         QTest::newRow("retina") << QSizeF(800,600) << QSize(1600,1200) << QRectF(10,20,100,80) << QRect(20,40,200,160);
         QTest::newRow("125%") << QSizeF(800,600) << QSize(1000,750) << QRectF(10,20,100,80) << QRect(12,25,126,100);
         QTest::newRow("150%") << QSizeF(800,600) << QSize(1200,900) << QRectF(10,20,100,80) << QRect(15,30,150,120);
+        QTest::newRow("200%") << QSizeF(800,600) << QSize(1600,1200) << QRectF(10,20,100,80) << QRect(20,40,200,160);
         QTest::newRow("clipped") << QSizeF(800,600) << QSize(1600,1200) << QRectF(-10,-10,20,20) << QRect(0,0,20,20);
     }
     void scaling() {
         QFETCH(QSizeF,logical); QFETCH(QSize,pixels); QFETCH(QRectF,selection); QFETCH(QRect,expected);
         QCOMPARE(pixelRect(selection,logical,pixels),expected);
+    }
+    void mixedScaleNegativeMonitor() {
+        const QRect screen(-1920,0,1920,1080), logical(-1536,0,1536,864);
+        QCOMPARE(nativeWindowToLogical(QRect(-1900,50,400,250),screen,logical),QRect(-1520,40,320,200));
+        QCOMPARE(nativeWindowToLogical(QRect(-50,0,200,100),screen,logical),QRect(-40,0,40,80));
     }
     void cropAndDraw() {
         QImage image(200,200,QImage::Format_ARGB32); image.fill(Qt::white);

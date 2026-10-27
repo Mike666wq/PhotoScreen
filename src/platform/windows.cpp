@@ -1,4 +1,5 @@
 #include "platform.h"
+#include "core/geometry.h"
 #include <QAbstractNativeEventFilter>
 #include <QApplication>
 #include <QBuffer>
@@ -32,10 +33,9 @@ BOOL CALLBACK collectWindow(HWND hwnd, LPARAM param) {
     DWORD cloaked=0; DwmGetWindowAttribute(hwnd,DWMWA_CLOAKED,&cloaked,sizeof(cloaked)); if (cloaked) return TRUE;
     RECT r{}; if (FAILED(DwmGetWindowAttribute(hwnd,DWMWA_EXTENDED_FRAME_BOUNDS,&r,sizeof(r))) && !GetWindowRect(hwnd,&r)) return TRUE;
     RECT clipped{}; if (!IntersectRect(&clipped,&r,&ctx->desktop)) return TRUE;
-    const double sx=double(ctx->logical.width())/(ctx->desktop.right-ctx->desktop.left);
-    const double sy=double(ctx->logical.height())/(ctx->desktop.bottom-ctx->desktop.top);
-    const QRect rect(ctx->logical.x()+qRound((clipped.left-ctx->desktop.left)*sx),ctx->logical.y()+qRound((clipped.top-ctx->desktop.top)*sy),
-                     qRound((clipped.right-clipped.left)*sx),qRound((clipped.bottom-clipped.top)*sy));
+    const QRect physicalScreen(ctx->desktop.left,ctx->desktop.top,ctx->desktop.right-ctx->desktop.left,ctx->desktop.bottom-ctx->desktop.top);
+    const QRect physicalWindow(clipped.left,clipped.top,clipped.right-clipped.left,clipped.bottom-clipped.top);
+    const QRect rect=nativeWindowToLogical(physicalWindow,physicalScreen,ctx->logical);
     if (rect.width()>=2 && rect.height()>=2) ctx->result.append(rect);
     return TRUE;
 }

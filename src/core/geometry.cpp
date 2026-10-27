@@ -18,6 +18,16 @@ QRect pixelRect(const QRectF &logical, const QSizeF &logicalSize, const QSize &p
 QRectF clampRect(const QRectF &rect, const QRectF &bounds) {
     return rect.normalized().intersected(bounds);
 }
+QRect nativeWindowToLogical(const QRect &window, const QRect &nativeScreen, const QRect &logicalScreen) {
+    if (nativeScreen.isEmpty() || logicalScreen.isEmpty()) return {};
+    const QRect clipped=window.intersected(nativeScreen);
+    if (clipped.isEmpty()) return {};
+    const qreal sx=qreal(logicalScreen.width())/nativeScreen.width();
+    const qreal sy=qreal(logicalScreen.height())/nativeScreen.height();
+    return QRect(logicalScreen.x()+qRound((clipped.x()-nativeScreen.x())*sx),
+                 logicalScreen.y()+qRound((clipped.y()-nativeScreen.y())*sy),
+                 qRound(clipped.width()*sx),qRound(clipped.height()*sy));
+}
 QImage cropPixels(const QImage &image, const QSizeF &logicalSize, const QRectF &selection) {
     return image.copy(pixelRect(selection, logicalSize, image.size()));
 }

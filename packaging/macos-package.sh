@@ -11,7 +11,7 @@ mkdir -p "$app/Contents/Resources"
 cp THIRD_PARTY_NOTICES.md "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"
 "$QT_ROOT_DIR/bin/macdeployqt" "$app" -always-overwrite -codesign=-
 codesign --verify --deep --strict --verbose=2 "$app"
-lipo -verify_arch arm64 "$app/Contents/MacOS/PhotoScreen"
+lipo "$app/Contents/MacOS/PhotoScreen" -verify_arch arm64
 ditto -c -k --sequesterRsrc --keepParent "$app" "$dist/PhotoScreen-$version-macos-arm64.zip"
 image_root="$RUNNER_TEMP/photoscreen-dmg-root"
 mountpoint="$RUNNER_TEMP/photoscreen-dmg-mounted"

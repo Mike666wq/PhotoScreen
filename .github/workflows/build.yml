@@ -30,6 +30,7 @@ jobs:
         if: runner.os == 'Windows'
         with:
           arch: x64
+          vsversion: '2022'
       - name: Prepare Qt extraction directory
         if: runner.os == 'Windows'
         shell: pwsh

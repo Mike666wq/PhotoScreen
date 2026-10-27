@@ -13,7 +13,7 @@ if(APPLE)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "15.2" CACHE STRING "Minimum macOS version")
 endif()
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Test)
 
 add_library(photoscreen_core STATIC
   src/core/annotation.cpp
@@ -39,7 +39,7 @@ else()
 endif()
 
 qt_add_executable(PhotoScreen WIN32 MACOSX_BUNDLE ${APP_SOURCES})
-target_link_libraries(PhotoScreen PRIVATE photoscreen_core Qt6::Network)
+target_link_libraries(PhotoScreen PRIVATE photoscreen_core)
 target_compile_definitions(PhotoScreen PRIVATE PHOTOSCREEN_VERSION="${PROJECT_VERSION}")
 if(APPLE)
   target_link_libraries(PhotoScreen PRIVATE "-framework AppKit" "-framework Carbon" "-framework CoreGraphics" "-framework ScreenCaptureKit" "-framework ServiceManagement")

@@ -8,6 +8,8 @@
 #include <QVector>
 #include <QUndoStack>
 
+#include "screen.h"
+
 class QTextDocument;
 
 namespace photo {
@@ -54,4 +56,8 @@ QPainterPath arrowPath(const Annotation &annotation);
 bool annotationContains(const Annotation &annotation, const QPointF &point, qreal tolerance = 5);
 QImage renderSelection(const QImage &source, const QSizeF &logicalSize,
                        const QRectF &selection, const QVector<Annotation> &annotations);
+// 跨屏渲染：选区可以横跨多块屏幕，输出比例取这些屏幕中的最大值，
+// 保证任何一屏都不被降采样。选区只落在一块屏幕上时与上面的单屏实现逐像素一致。
+QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &selection,
+                       const QVector<Annotation> &annotations);
 }

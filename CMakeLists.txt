@@ -20,6 +20,8 @@ add_library(photoscreen_core STATIC
   src/core/annotation.h
   src/core/geometry.cpp
   src/core/geometry.h
+  src/core/screen.cpp
+  src/core/screen.h
 )
 target_include_directories(photoscreen_core PUBLIC src)
 target_link_libraries(photoscreen_core PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets)

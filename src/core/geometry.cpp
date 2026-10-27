@@ -19,6 +19,23 @@ QRect pixelRect(const QRectF &logical, const QSizeF &logicalSize, const QSize &p
 QRectF clampRect(const QRectF &rect, const QRectF &bounds) {
     return rect.normalized().intersected(bounds);
 }
+AffineMap logicalMapFromNative(const QRect &nativeScreen, const QRect &logicalScreen) {
+    AffineMap map;
+    if (nativeScreen.isEmpty() || logicalScreen.isEmpty()) return map;
+    map.scaleX = qreal(logicalScreen.width()) / nativeScreen.width();
+    map.scaleY = qreal(logicalScreen.height()) / nativeScreen.height();
+    map.offset = QPointF(logicalScreen.x(), logicalScreen.y())
+               - QPointF(nativeScreen.x()*map.scaleX, nativeScreen.y()*map.scaleY);
+    return map;
+}
+AffineMap pixelMapFromScreen(const QRect &logicalGeometry, const QSize &pixelSize) {
+    AffineMap map;
+    if (logicalGeometry.isEmpty() || pixelSize.isEmpty()) return map;
+    map.scaleX = qreal(pixelSize.width()) / logicalGeometry.width();
+    map.scaleY = qreal(pixelSize.height()) / logicalGeometry.height();
+    map.offset = QPointF(-logicalGeometry.x()*map.scaleX, -logicalGeometry.y()*map.scaleY);
+    return map;
+}
 QRect nativeWindowToLogical(const QRect &window, const QRect &nativeScreen, const QRect &logicalScreen) {
     if (nativeScreen.isEmpty() || logicalScreen.isEmpty()) return {};
     const QRect clipped=window.intersected(nativeScreen);

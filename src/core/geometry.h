@@ -7,4 +7,5 @@ QRect pixelRect(const QRectF &logical, const QSizeF &logicalSize, const QSize &p
 QRectF clampRect(const QRectF &rect, const QRectF &bounds);
 QRect nativeWindowToLogical(const QRect &window, const QRect &nativeScreen, const QRect &logicalScreen);
 QImage cropPixels(const QImage &image, const QSizeF &logicalSize, const QRectF &selection);
+QImage magnifierSample(const QImage &image, const QPoint &pixel, int radius = 8);
 }

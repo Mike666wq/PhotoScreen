@@ -53,8 +53,19 @@ bool App::initialize() {
     if (!m_hotkey->registerShortcut(shortcut,&error)) {
         QTimer::singleShot(0,this,[this,error] { QMessageBox::warning(nullptr,QStringLiteral("快捷键不可用"),error+QStringLiteral("\n请通过菜单栏或系统托盘中的“设置”更换快捷键。")); });
     }
-    installEnvironmentMonitor(this,[this] { if (m_overlay) m_overlay->close(); });
+    for (QScreen *screen : QGuiApplication::screens()) watchScreen(screen);
+    connect(qApp,&QGuiApplication::screenAdded,this,[this](QScreen *screen) { invalidateCapture(); watchScreen(screen); });
+    connect(qApp,&QGuiApplication::screenRemoved,this,[this](QScreen *) { invalidateCapture(); });
+    installEnvironmentMonitor(this,[this] { invalidateCapture(); });
     return true;
+}
+void App::invalidateCapture() {
+    ++m_captureGeneration; m_capturing=false;
+    if (m_overlay) { m_overlay->close(); m_overlay=nullptr; }
+}
+void App::watchScreen(QScreen *screen) {
+    connect(screen,&QScreen::geometryChanged,this,[this](const QRect &) { invalidateCapture(); });
+    connect(screen,&QScreen::logicalDotsPerInchChanged,this,[this](qreal) { invalidateCapture(); });
 }
 void App::beginCapture() {
     if (m_capturing || m_overlay) return;
@@ -63,16 +74,20 @@ void App::beginCapture() {
     if (!screen) screen=QGuiApplication::primaryScreen();
     if (!screen) { QMessageBox::warning(nullptr,QStringLiteral("截图失败"),QStringLiteral("未找到可用屏幕。")); return; }
     m_capturing=true;
+    const quint64 generation=++m_captureGeneration;
     QPointer<QScreen> selected=screen;
-    QTimer::singleShot(200,this,[this,selected] {
+    QTimer::singleShot(200,this,[this,selected,generation] {
+        if (generation!=m_captureGeneration) return;
         if (!selected) { m_capturing=false; return; }
-        captureScreen(selected,this,[this,selected](CaptureResult result) {
+        captureScreen(selected,this,[this,selected,generation](CaptureResult result) {
+            if (generation!=m_captureGeneration) return;
             m_capturing=false;
             if (!selected || result.frame.image.isNull()) { reportCaptureError(result); return; }
             if (selected->geometry()!=result.frame.screenGeometry) return;
-            m_overlay=new CaptureOverlay(std::move(result.frame),selected);
-            connect(m_overlay,&CaptureOverlay::finished,this,[this] { m_overlay=nullptr; });
-            connect(m_overlay,&QObject::destroyed,this,[this] { m_overlay=nullptr; });
+            auto *overlay=new CaptureOverlay(std::move(result.frame),selected);
+            m_overlay=overlay;
+            connect(overlay,&CaptureOverlay::finished,this,[this,overlay] { if (m_overlay.data()==overlay) m_overlay=nullptr; });
+            connect(overlay,&QObject::destroyed,this,[this,overlay] { if (m_overlay.data()==overlay) m_overlay=nullptr; });
             m_overlay->show(); configureOverlay(m_overlay); m_overlay->raise(); m_overlay->activateWindow(); m_overlay->setFocus();
         });
     });

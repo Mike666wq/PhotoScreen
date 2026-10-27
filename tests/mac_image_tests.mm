@@ -1,5 +1,7 @@
 #include "platform/macimage.h"
 #include <QBuffer>
+#include <QDir>
+#include <QPainter>
 #include <QtTest>
 
 class MacImageTests : public QObject {
@@ -18,6 +20,17 @@ private slots:
         const QImage converted=photo::imageFromCGImage(source);
         CGImageRelease(source);
         QCOMPARE(converted.size(),original.size());
+        const QString outputDir=qEnvironmentVariable("PHOTOSCREEN_REPORT_DIR");
+        if (!outputDir.isEmpty()) {
+            QDir().mkpath(outputDir);
+            QImage comparison(450,150,QImage::Format_RGB32); comparison.fill(Qt::black);
+            QPainter painter(&comparison);
+            painter.setRenderHint(QPainter::SmoothPixmapTransform,false);
+            painter.drawImage(QRect(0,5,220,140),original);
+            painter.drawImage(QRect(230,5,220,140),converted);
+            painter.end();
+            QVERIFY(comparison.save(outputDir+QStringLiteral("/mac-orientation-expected-actual.png")));
+        }
         for (QPoint p : {QPoint(0,0),QPoint(10,0),QPoint(0,6),QPoint(10,6),QPoint(3,1)})
             QCOMPARE(converted.pixelColor(p),original.pixelColor(p));
         QByteArray png; QBuffer output(&png); QVERIFY(output.open(QIODevice::WriteOnly));

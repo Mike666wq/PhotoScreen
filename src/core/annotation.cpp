@@ -1,18 +1,55 @@
 #include "annotation.h"
 #include "geometry.h"
 #include <QPainter>
+#include <QPainterPathStroker>
+#include <QApplication>
+#include <QTextCursor>
+#include <QTextDocument>
 #include <QUndoCommand>
 #include <QtMath>
 #include <algorithm>
 
 namespace photo {
 QRectF Annotation::bounds() const {
+    if (tool == Tool::Arrow) return arrowPath(*this).boundingRect();
     if (tool == Tool::Pen && !points.isEmpty()) {
         QRectF box(points.first(), QSizeF(0, 0));
         for (const auto &point : points) box = box.united(QRectF(point, QSizeF(0.01, 0.01)));
         return box.adjusted(-width, -width, width, width);
     }
     return rect.normalized();
+}
+QPainterPath arrowPath(const Annotation &a) {
+    QPainterPath path;
+    const QPointF start=a.rect.topLeft(), end=a.rect.bottomRight();
+    const QLineF axis(start,end);
+    const qreal length=axis.length();
+    if (length<0.01) return path;
+    const QPointF direction=(end-start)/length;
+    const QPointF normal(-direction.y(),direction.x());
+    const qreal scale=qBound<qreal>(1.0/3.0,a.width/3.0,20.0/3.0);
+    const qreal headLength=qMin(length*0.42,length*0.10*scale);
+    const qreal headHalfWidth=qMin(length*0.28,length*0.055*scale);
+    const qreal neckHalfWidth=qMin(headHalfWidth*0.8,length*0.020*scale);
+    const QPointF base=end-direction*headLength;
+    path.moveTo(start);
+    path.lineTo(base+normal*neckHalfWidth);
+    path.lineTo(base+normal*headHalfWidth);
+    path.lineTo(end);
+    path.lineTo(base-normal*headHalfWidth);
+    path.lineTo(base-normal*neckHalfWidth);
+    path.closeSubpath();
+    return path;
+}
+bool annotationContains(const Annotation &a, const QPointF &point, qreal tolerance) {
+    if (a.tool==Tool::Text) return a.bounds().adjusted(-tolerance,-tolerance,tolerance,tolerance).contains(point);
+    QPainterPath path;
+    if (a.tool==Tool::Arrow) path=arrowPath(a);
+    else if (a.tool==Tool::Rectangle) path.addRect(a.rect.normalized());
+    else if (a.tool==Tool::Ellipse) path.addEllipse(a.rect.normalized());
+    else return false;
+    QPainterPathStroker stroker; stroker.setWidth(qMax<qreal>(1,a.width)+2*tolerance);
+    return (a.tool==Tool::Arrow && path.contains(point)) || stroker.createStroke(path).contains(point);
 }
 void Annotation::translate(const QPointF &delta) {
     rect.translate(delta);
@@ -62,16 +99,7 @@ void drawAnnotation(QPainter &p, const Annotation &a) {
     case Tool::Rectangle: p.drawRect(a.rect.normalized()); break;
     case Tool::Ellipse: p.drawEllipse(a.rect.normalized()); break;
     case Tool::Arrow: {
-        const QPointF start = a.rect.topLeft(), end = a.rect.bottomRight();
-        p.drawLine(start, end);
-        const QLineF line(start, end);
-        if (line.length() > 0.01) {
-            const qreal angle = qAtan2(end.y() - start.y(), end.x() - start.x());
-            const qreal length = qMax<qreal>(10, a.width * 4);
-            const QPointF v1(end.x() - length * qCos(angle - 0.5), end.y() - length * qSin(angle - 0.5));
-            const QPointF v2(end.x() - length * qCos(angle + 0.5), end.y() - length * qSin(angle + 0.5));
-            p.drawLine(end, v1); p.drawLine(end, v2);
-        }
+        p.setPen(Qt::NoPen); p.setBrush(a.color); p.drawPath(arrowPath(a));
         break;
     }
     case Tool::Pen:
@@ -79,8 +107,16 @@ void drawAnnotation(QPainter &p, const Annotation &a) {
         else if (!a.points.isEmpty()) { QPainterPath path(a.points.first()); for (qsizetype i=1; i<a.points.size(); ++i) path.lineTo(a.points[i]); p.drawPath(path); }
         break;
     case Tool::Text: {
-        QFont font = p.font(); font.setPixelSize(a.fontSize); p.setFont(font);
-        p.drawText(a.rect.normalized(), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, a.text);
+        const QRectF rect=a.rect.normalized();
+        QFont font=QApplication::font();
+        if (!a.fontFamily.isEmpty()) font.setFamily(a.fontFamily);
+        font.setPixelSize(a.fontSize);
+        QTextDocument document; document.setDocumentMargin(0); document.setDefaultFont(font);
+        document.setPlainText(a.text); document.setTextWidth(rect.width());
+        QTextCursor cursor(&document); cursor.select(QTextCursor::Document);
+        QTextCharFormat format; format.setForeground(a.color); cursor.mergeCharFormat(format);
+        p.translate(rect.topLeft()); p.setClipRect(QRectF(QPointF(0,0),rect.size()));
+        document.drawContents(&p);
         break;
     }
     default: break;

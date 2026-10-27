@@ -2,6 +2,7 @@
 #include "core/annotation.h"
 #include "platform/platform.h"
 #include <QWidget>
+#include <functional>
 
 class QButtonGroup;
 class QFrame;
@@ -14,7 +15,8 @@ namespace photo {
 class CaptureOverlay final : public QWidget {
     Q_OBJECT
 public:
-    CaptureOverlay(ScreenFrame frame, QScreen *screen);
+    using ClipboardWriter = std::function<bool(const QImage &, QString *)>;
+    CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWriter writer = {});
 signals:
     void finished();
 protected:
@@ -26,15 +28,18 @@ protected:
     void keyPressEvent(QKeyEvent *) override;
     bool eventFilter(QObject *, QEvent *) override;
 private:
-    enum class Drag { None, NewSelection, MoveSelection, ResizeSelection, Draw, MoveObject, ResizeObject };
+    enum class Drag { None, NewSelection, MoveSelection, ResizeSelection, Draw, MoveObject, ResizeObject, ArrowStart, ArrowEnd };
     void buildToolbar();
+    void updateColorSwatch();
     void positionToolbar();
     void setTool(Tool tool);
     void startText(const QPointF &point, int existing = -1);
+    void resizeTextEditor();
     void commitText();
     void finishCapture();
     void cancelCapture();
     void resetDocument();
+    void updateDrag(const QPointF &point);
     QPointF boundedPoint(const QPointF &p) const;
     QRectF windowAt(const QPointF &p) const;
     int objectAt(const QPointF &p) const;
@@ -44,6 +49,7 @@ private:
     void showError(const QString &message);
 
     ScreenFrame m_frame;
+    ClipboardWriter m_clipboardWriter;
     QScreen *m_screen;
     AnnotationDocument m_document;
     QRectF m_selection;
@@ -66,6 +72,7 @@ private:
     QSpinBox *m_widthControl = nullptr;
     QSpinBox *m_fontControl = nullptr;
     QTextEdit *m_textEditor = nullptr;
+    QPointF m_textAnchor;
     int m_editingText = -1;
 };
 }

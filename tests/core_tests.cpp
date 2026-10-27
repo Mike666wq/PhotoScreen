@@ -1,6 +1,7 @@
 #include "core/annotation.h"
 #include "core/geometry.h"
 #include <QtTest>
+#include <QtMath>
 
 using namespace photo;
 class CoreTests : public QObject {
@@ -46,6 +47,41 @@ private slots:
         doc.undoStack()->undo(); QCOMPARE(doc.items()[0].rect.topLeft(),QPointF(10,10));
         doc.undoStack()->undo(); QCOMPARE(doc.items().size(),0);
         doc.undoStack()->redo(); QCOMPARE(doc.items().size(),1);
+    }
+    void arrowLengthAndThickness() {
+        Annotation arrow; arrow.tool=Tool::Arrow; arrow.color=QColor("#ff3b3b"); arrow.width=3;
+        arrow.rect=QRectF(QPointF(20,100),QPointF(120,100));
+        const QRectF shortBounds=arrowPath(arrow).boundingRect();
+        arrow.rect=QRectF(QPointF(20,100),QPointF(320,100));
+        const QRectF longBounds=arrowPath(arrow).boundingRect();
+        QVERIFY(longBounds.height()>shortBounds.height()*2.9);
+        arrow.width=12;
+        QVERIFY(arrowPath(arrow).boundingRect().height()>longBounds.height()*3.5);
+        QVERIFY(arrowPath(arrow).contains(QPointF(200,100)));
+        QVERIFY(!arrowPath(arrow).contains(QPointF(200,180)));
+    }
+    void arrowDirectionAndHitTesting() {
+        const QPointF center(200,200);
+        for (int i=0;i<8;++i) {
+            const qreal angle=i*3.141592653589793/4.0;
+            const QPointF direction(qCos(angle),qSin(angle));
+            Annotation arrow; arrow.tool=Tool::Arrow; arrow.width=3;
+            arrow.rect=QRectF(center,center+direction*120);
+            const auto path=arrowPath(arrow);
+            QVERIFY(!path.isEmpty());
+            QVERIFY(annotationContains(arrow,center+direction*70,2));
+            QVERIFY(!annotationContains(arrow,center+direction*70+QPointF(-direction.y(),direction.x())*30,2));
+        }
+        Annotation diagonal; diagonal.tool=Tool::Arrow; diagonal.rect=QRectF(QPointF(40,40),QPointF(240,240));
+        QVERIFY(!annotationContains(diagonal,QPointF(220,60)));
+    }
+    void magnifierAtEdges() {
+        QImage source(20,20,QImage::Format_RGB32); source.fill(Qt::white);
+        source.setPixelColor(0,0,Qt::red); source.setPixelColor(19,19,Qt::blue);
+        auto top=magnifierSample(source,QPoint(0,0)); QCOMPARE(top.size(),QSize(17,17));
+        QCOMPARE(top.pixelColor(8,8),QColor(Qt::red)); QCOMPARE(top.pixelColor(0,0),QColor(Qt::black));
+        auto bottom=magnifierSample(source,QPoint(19,19));
+        QCOMPARE(bottom.pixelColor(8,8),QColor(Qt::blue)); QCOMPARE(bottom.pixelColor(16,16),QColor(Qt::black));
     }
 };
 QTEST_MAIN(CoreTests)

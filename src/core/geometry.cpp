@@ -1,5 +1,6 @@
 #include "geometry.h"
 #include <QtMath>
+#include <QPainter>
 #include <algorithm>
 
 namespace photo {
@@ -30,5 +31,17 @@ QRect nativeWindowToLogical(const QRect &window, const QRect &nativeScreen, cons
 }
 QImage cropPixels(const QImage &image, const QSizeF &logicalSize, const QRectF &selection) {
     return image.copy(pixelRect(selection, logicalSize, image.size()));
+}
+QImage magnifierSample(const QImage &image, const QPoint &pixel, int radius) {
+    if (image.isNull() || radius < 0) return {};
+    const int side=radius*2+1;
+    QImage sample(side,side,QImage::Format_ARGB32_Premultiplied); sample.fill(Qt::black);
+    const QRect requested(pixel.x()-radius,pixel.y()-radius,side,side);
+    const QRect available=requested.intersected(image.rect());
+    if (!available.isEmpty()) {
+        QPainter painter(&sample);
+        painter.drawImage(available.topLeft()-requested.topLeft(),image,available);
+    }
+    return sample;
 }
 }

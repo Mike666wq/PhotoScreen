@@ -17,6 +17,7 @@ struct Annotation {
     QColor color = Qt::red;
     qreal width = 3;
     int fontSize = 18;
+    QString fontFamily;
     QString text;
     QRectF bounds() const;
     void translate(const QPointF &delta);
@@ -35,6 +36,8 @@ private:
     QUndoStack m_undo;
 };
 void drawAnnotation(QPainter &painter, const Annotation &annotation);
+QPainterPath arrowPath(const Annotation &annotation);
+bool annotationContains(const Annotation &annotation, const QPointF &point, qreal tolerance = 5);
 QImage renderSelection(const QImage &source, const QSizeF &logicalSize,
                        const QRectF &selection, const QVector<Annotation> &annotations);
 }

@@ -30,6 +30,10 @@ jobs:
         if: runner.os == 'Windows'
         with:
           arch: x64
+      - name: Prepare Qt extraction directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force "$env:RUNNER_WORKSPACE\Qt\6.12.0\msvc2022_64" | Out-Null
       - uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
         with:
           version: '6.12.0'

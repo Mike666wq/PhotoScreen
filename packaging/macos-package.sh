@@ -7,6 +7,7 @@ mkdir -p "$stage" "$dist"
 cmake --install build --prefix "$stage"
 app="$stage/PhotoScreen.app"
 test -d "$app"
+mkdir -p "$app/Contents/Resources"
 cp THIRD_PARTY_NOTICES.md "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"
 "$QT_ROOT_DIR/bin/macdeployqt" "$app" -always-overwrite -codesign=-
 codesign --verify --deep --strict --verbose=2 "$app"

@@ -30,7 +30,9 @@ using Microsoft::WRL::ComPtr;
 namespace photo {
 namespace {
 QString failure(const QString &operation, HRESULT hr) { return QStringLiteral("%1（错误 0x%2）").arg(operation).arg(quint32(hr),8,16,QChar('0')); }
-struct WindowListContext { RECT desktop; QRect logical; QVector<QRect> result; };
+// 混合 DPI：每块屏的物理矩形与逻辑矩形配对，窗口换算按「主要所在屏」进行。
+struct ScreenPair { QRect physical; QRect logical; };
+struct WindowListContext { RECT desktop; QRect logical; QVector<ScreenPair> pairs; QVector<QRect> result; };
 BOOL CALLBACK collectWindow(HWND hwnd, LPARAM param) {
     auto *ctx=reinterpret_cast<WindowListContext *>(param);
     DWORD process=0; GetWindowThreadProcessId(hwnd,&process);
@@ -38,9 +40,20 @@ BOOL CALLBACK collectWindow(HWND hwnd, LPARAM param) {
     DWORD cloaked=0; DwmGetWindowAttribute(hwnd,DWMWA_CLOAKED,&cloaked,sizeof(cloaked)); if (cloaked) return TRUE;
     RECT r{}; if (FAILED(DwmGetWindowAttribute(hwnd,DWMWA_EXTENDED_FRAME_BOUNDS,&r,sizeof(r))) && !GetWindowRect(hwnd,&r)) return TRUE;
     RECT clipped{}; if (!IntersectRect(&clipped,&r,&ctx->desktop)) return TRUE;
-    const QRect physicalScreen(ctx->desktop.left,ctx->desktop.top,ctx->desktop.right-ctx->desktop.left,ctx->desktop.bottom-ctx->desktop.top);
     const QRect physicalWindow(clipped.left,clipped.top,clipped.right-clipped.left,clipped.bottom-clipped.top);
-    const QRect rect=nativeWindowToLogical(physicalWindow,physicalScreen,ctx->logical);
+    // 混合 DPI 下桌面级统一缩放会错位：找与窗口相交面积最大的屏，用该屏的物理↔逻辑矩形换算。
+    const ScreenPair *best=nullptr; qint64 bestArea=0;
+    for (const ScreenPair &pair : ctx->pairs) {
+        const QRect inter=physicalWindow.intersected(pair.physical);
+        const qint64 area=qint64(inter.width())*inter.height();
+        if (!inter.isEmpty() && area>bestArea) { bestArea=area; best=&pair; }
+    }
+    QRect rect;
+    if (best) rect=nativeWindowToLogical(physicalWindow,best->physical,best->logical);
+    else if (!ctx->logical.isEmpty()) {
+        const QRect physicalScreen(ctx->desktop.left,ctx->desktop.top,ctx->desktop.right-ctx->desktop.left,ctx->desktop.bottom-ctx->desktop.top);
+        rect=nativeWindowToLogical(physicalWindow,physicalScreen,ctx->logical);
+    }
     if (rect.width()>=2 && rect.height()>=2) ctx->result.append(rect);
     return TRUE;
 }
@@ -52,16 +65,30 @@ QVector<ScreenTarget> screenTargets() {
         result.append(ScreenTarget{screen->name(),screen->geometry(),screen->devicePixelRatio()});
     return result;
 }
-// 把 DXGI 输出对应到 Qt 的屏幕。
-// 设备名是首选锚点：Qt 的 QScreen::name() 与 DXGI 的 DeviceName 同源（\\.\DISPLAYn）。
+// 把 DXGI 输出对应到 Qt 的屏幕。策略按可靠性排序：
+// 1) 设备名：QScreen::name() 与 DXGI DeviceName 理论上同源（\\.\DISPLAYn），
+//    但部分环境下 Qt 返回 EDID 型号名（如 "B160QAN02.7"），此时对不上。
+// 2) 位置+缩放尺寸：Qt 混合 DPI 下各屏逻辑位置保留原生坐标、尺寸按自身缩放折算，
+//    因此物理位置 ≈ 逻辑位置、物理尺寸 ≈ 逻辑尺寸×缩放。±2px 容差吸收取整误差。
+// 3) 整体乘缩放兜底：逻辑矩形整体乘缩放后与物理矩形一致（位置也被缩放的行为）。
 bool matchScreen(const QVector<ScreenTarget> &targets, const QString &deviceName, const QRect &physical, QRect &logical) {
     for (const ScreenTarget &target : targets)
         if (target.deviceName.compare(deviceName,Qt::CaseInsensitive)==0) { logical=target.logical; return true; }
-    // 设备名对不上时按物理位置兜底：逻辑矩形乘以缩放比例应与物理矩形一致。
+    for (const ScreenTarget &target : targets) {
+        const int expectedWidth=qRound(target.logical.width()*target.ratio);
+        const int expectedHeight=qRound(target.logical.height()*target.ratio);
+        if (qAbs(target.logical.left()-physical.left())<=2 && qAbs(target.logical.top()-physical.top())<=2
+            && qAbs(expectedWidth-physical.width())<=2 && qAbs(expectedHeight-physical.height())<=2) {
+            logical=target.logical; return true;
+        }
+    }
     for (const ScreenTarget &target : targets) {
         const QRect expected(qRound(target.logical.left()*target.ratio),qRound(target.logical.top()*target.ratio),
                              qRound(target.logical.width()*target.ratio),qRound(target.logical.height()*target.ratio));
-        if (expected==physical) { logical=target.logical; return true; }
+        if (qAbs(expected.left()-physical.left())<=2 && qAbs(expected.top()-physical.top())<=2
+            && qAbs(expected.width()-physical.width())<=2 && qAbs(expected.height()-physical.height())<=2) {
+            logical=target.logical; return true;
+        }
     }
     return false;
 }
@@ -101,7 +128,10 @@ bool captureOutput(IDXGIAdapter1 *adapter, const ComPtr<IDXGIOutput> &output, co
     if (rotation) result=result.transformed(QTransform().rotate(rotation));
     return true;
 }
-// 捕获整个虚拟桌面：遍历所有挂载在桌面上的 DXGI 输出。
+// 捕获整个虚拟桌面：两遍式。
+// 第一遍：枚举所有 DXGI 输出并用 matchScreen 配对收集（adapter/output 由本函数持有）。
+// 窗口矩形按「所在屏」的物理↔逻辑对换算，混合 DPI 下不能用桌面级统一缩放。
+// 第二遍：逐输出捕获；镜像输出物理矩形相同，复用同一帧，屏数仍与 Qt 报告一致。
 // targets 是主线程取好的 Qt 屏幕快照，工作线程里不再碰 GUI 对象。
 CaptureResult captureAllFrames(const QVector<ScreenTarget> &targets) {
     appendDiagnosticLog(QStringLiteral("captureAllFrames 开始：Qt 屏 %1 块").arg(targets.size()));
@@ -109,21 +139,8 @@ CaptureResult captureAllFrames(const QVector<ScreenTarget> &targets) {
     ComPtr<IDXGIFactory1> factory; HRESULT hr=CreateDXGIFactory1(IID_PPV_ARGS(&factory));
     if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("CreateDXGIFactory1"),hr));
         result.error=failure(QStringLiteral("无法初始化屏幕捕获"),hr); return result; }
-    // 虚拟桌面：物理矩形来自系统，逻辑矩形来自 Qt 的屏幕列表。
-    const QRect physicalVirtual(GetSystemMetrics(SM_XVIRTUALSCREEN),GetSystemMetrics(SM_YVIRTUALSCREEN),
-                                GetSystemMetrics(SM_CXVIRTUALSCREEN),GetSystemMetrics(SM_CYVIRTUALSCREEN));
-    QRect logicalVirtual;
-    for (const ScreenTarget &target : targets)
-        logicalVirtual=logicalVirtual.isNull()?target.logical:logicalVirtual.united(target.logical);
-    appendDiagnosticLog(QStringLiteral("虚拟桌面：物理(%1,%2 %3x%4) 逻辑(%5,%6 %7x%8)")
-        .arg(physicalVirtual.left()).arg(physicalVirtual.top()).arg(physicalVirtual.width()).arg(physicalVirtual.height())
-        .arg(logicalVirtual.left()).arg(logicalVirtual.top()).arg(logicalVirtual.width()).arg(logicalVirtual.height()));
-    if (!logicalVirtual.isEmpty() && !physicalVirtual.isEmpty()) {
-        WindowListContext list{RECT{physicalVirtual.left(),physicalVirtual.top(),physicalVirtual.right()+1,physicalVirtual.bottom()+1},logicalVirtual,{}};
-        EnumWindows(collectWindow,reinterpret_cast<LPARAM>(&list));
-        result.frame.windowRects=list.result;
-        appendDiagnosticLog(QStringLiteral("窗口枚举完成：%1 个").arg(list.result.size()));
-    }
+    struct OutputItem { ComPtr<IDXGIAdapter1> adapter; ComPtr<IDXGIOutput> output; DXGI_OUTPUT_DESC desc; QString deviceName; QRect physical; QRect logical; };
+    QVector<OutputItem> items;
     ComPtr<IDXGIAdapter1> adapter; ComPtr<IDXGIOutput> output;
     for (UINT a=0; factory->EnumAdapters1(a,&adapter)!=DXGI_ERROR_NOT_FOUND; ++a) {
         DXGI_ADAPTER_DESC1 adapterDesc{}; adapter->GetDesc1(&adapterDesc);
@@ -135,7 +152,6 @@ CaptureResult captureAllFrames(const QVector<ScreenTarget> &targets) {
                                  desc.DesktopCoordinates.right-desc.DesktopCoordinates.left,
                                  desc.DesktopCoordinates.bottom-desc.DesktopCoordinates.top);
             QRect logical;
-            QImage image;
             const bool matched=matchScreen(targets,deviceName,physical,logical);
             appendDiagnosticLog(QStringLiteral("适配器「%1」输出 %2：attached=%3 物理(%4,%5 %6x%7) 匹配=%8")
                 .arg(adapterName,deviceName).arg(desc.AttachedToDesktop)
@@ -143,13 +159,47 @@ CaptureResult captureAllFrames(const QVector<ScreenTarget> &targets) {
                 .arg(matched
                     ? QStringLiteral("是，逻辑(%1,%2 %3x%4)").arg(logical.left()).arg(logical.top()).arg(logical.width()).arg(logical.height())
                     : QStringLiteral("否")));
-            if (desc.AttachedToDesktop && matched && captureOutput(adapter.Get(),output,desc,image)) {
-                result.frame.screens.append(ScreenImage{logical,image});
-                appendDiagnosticLog(QStringLiteral("输出 %1 捕获成功：%2x%3").arg(deviceName).arg(image.width()).arg(image.height()));
+            if (desc.AttachedToDesktop && matched) {
+                // ComPtr 带用户定义构造函数，OutputItem 不是聚合类型，需逐成员赋值。
+                OutputItem item;
+                item.adapter=adapter; item.output=output; item.desc=desc;
+                item.deviceName=deviceName; item.physical=physical; item.logical=logical;
+                items.append(item);
             }
             output.Reset();
         }
         adapter.Reset();
+    }
+    // 虚拟桌面：物理矩形来自系统，逻辑矩形来自 Qt 的屏幕列表。
+    const QRect physicalVirtual(GetSystemMetrics(SM_XVIRTUALSCREEN),GetSystemMetrics(SM_YVIRTUALSCREEN),
+                                GetSystemMetrics(SM_CXVIRTUALSCREEN),GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    QRect logicalVirtual;
+    for (const ScreenTarget &target : targets)
+        logicalVirtual=logicalVirtual.isNull()?target.logical:logicalVirtual.united(target.logical);
+    appendDiagnosticLog(QStringLiteral("虚拟桌面：物理(%1,%2 %3x%4) 逻辑(%5,%6 %7x%8)")
+        .arg(physicalVirtual.left()).arg(physicalVirtual.top()).arg(physicalVirtual.width()).arg(physicalVirtual.height())
+        .arg(logicalVirtual.left()).arg(logicalVirtual.top()).arg(logicalVirtual.width()).arg(logicalVirtual.height()));
+    QVector<ScreenPair> pairs;
+    for (const OutputItem &item : items) pairs.append(ScreenPair{item.physical,item.logical});
+    if (!logicalVirtual.isEmpty() && !physicalVirtual.isEmpty()) {
+        WindowListContext list{RECT{physicalVirtual.left(),physicalVirtual.top(),physicalVirtual.right()+1,physicalVirtual.bottom()+1},logicalVirtual,pairs,{}};
+        EnumWindows(collectWindow,reinterpret_cast<LPARAM>(&list));
+        result.frame.windowRects=list.result;
+        appendDiagnosticLog(QStringLiteral("窗口枚举完成：%1 个").arg(list.result.size()));
+    }
+    // 第二遍：逐输出捕获；镜像输出物理矩形相同，复用同一帧，屏数仍与 Qt 一致。
+    QVector<QRect> capturedPhysical; QVector<int> imageIndex;
+    for (const OutputItem &item : items) {
+        int reuse=-1;
+        for (int i=0;i<capturedPhysical.size();++i)
+            if (capturedPhysical[i]==item.physical) { reuse=i; break; }
+        QImage image;
+        if (reuse>=0) image=result.frame.screens[imageIndex[reuse]].image;
+        else if (!captureOutput(item.adapter.Get(),item.output,item.desc,image)) continue;
+        capturedPhysical.append(item.physical); imageIndex.append(result.frame.screens.size());
+        result.frame.screens.append(ScreenImage{item.logical,image});
+        appendDiagnosticLog(QStringLiteral("输出 %1 捕获成功：%2x%3%4").arg(item.deviceName).arg(image.width()).arg(image.height())
+            .arg(reuse>=0?QStringLiteral("（镜像屏，复用同物理矩形输出）"):QString()));
     }
     if (result.frame.screens.isEmpty()) {
         appendDiagnosticLog(QStringLiteral("captureAllFrames 失败：没有捕获到任何输出"));

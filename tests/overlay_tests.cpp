@@ -1,14 +1,18 @@
 #include "captureoverlay.h"
 #include <QApplication>
+#include <QFrame>
 #include <QInputMethodEvent>
 #include <QLabel>
 #include <QMessageBox>
 #include <QScreen>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QSlider>
+#include <QStringList>
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
+#include <QVariant>
 #include <QtTest>
 
 using namespace photo;
@@ -26,6 +30,12 @@ private:
         QCoreApplication::processEvents();
     }
 private slots:
+    void initTestCase() {
+        // 与 src/main.cpp 保持一致：设置组织名与应用名之后，QSettings 的落盘位置
+        // 在 Windows 注册表与 macOS plist 上才一致，测试结果不会随平台漂移。
+        QCoreApplication::setOrganizationName(QStringLiteral("PhotoScreen"));
+        QCoreApplication::setApplicationName(QStringLiteral("PhotoScreen"));
+    }
     void releasePositionAndCopy() {
         QImage copied; int writes=0;
         auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[&](const QImage &image,QString *) { copied=image; ++writes; return true; });
@@ -321,6 +331,171 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(overlay->annotations().size(),1);
         QCOMPARE(overlay->undoDepth(),steps);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void stylePanelTogglesWithToolbarButton() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        auto *panel=overlay->findChild<QFrame *>("stylePanel"); QVERIFY(panel);
+        QVERIFY(!panel->isVisible());
+        auto *width=overlay->findChild<QToolButton *>("widthButton"); QVERIFY(width);
+        width->click();
+        QVERIFY(panel->isVisible());
+        // 再点一次收起。
+        width->click();
+        QVERIFY(!panel->isVisible());
+        // 面板内的滑块 objectName 保持不变，既有断言继续有效。
+        QVERIFY(overlay->findChild<QSlider *>("widthControl"));
+        QVERIFY(overlay->findChild<QSlider *>("fontControl"));
+        QVERIFY(overlay->findChild<QSlider *>("fontWeightControl"));
+        QVERIFY(overlay->findChild<QLabel *>("widthValue"));
+        QVERIFY(overlay->findChild<QLabel *>("fontValue"));
+        QVERIFY(overlay->findChild<QLabel *>("fontWeightValue"));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void stylePanelNeverCoversToolbar() {
+        auto *overlay=new CaptureOverlay(frame(320,260),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(300,220));
+        auto *panel=overlay->findChild<QFrame *>("stylePanel"); QVERIFY(panel);
+        auto *toolbar=overlay->findChild<QFrame *>("captureToolbar"); QVERIFY(toolbar);
+        overlay->findChild<QToolButton *>("widthButton")->click();
+        QVERIFY(panel->isVisible());
+        QVERIFY2(!panel->geometry().intersects(toolbar->geometry()),
+                 qPrintable(QStringLiteral("面板 %1,%2 %3×%4 工具栏 %5,%6 %7×%8")
+                            .arg(panel->geometry().x()).arg(panel->geometry().y())
+                            .arg(panel->width()).arg(panel->height())
+                            .arg(toolbar->geometry().x()).arg(toolbar->geometry().y())
+                            .arg(toolbar->width()).arg(toolbar->height())));
+        // 完成与取消按钮仍然可点，参数面板不能压住它们。
+        QVERIFY(overlay->findChild<QToolButton *>("doneButton")->isVisible());
+        QVERIFY(overlay->findChild<QToolButton *>("cancelButton")->isVisible());
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void stylePanelEscOnlyClosesPanel() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        QSignalSpy finished(overlay,&CaptureOverlay::finished);
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        auto *panel=overlay->findChild<QFrame *>("stylePanel"); QVERIFY(panel);
+        overlay->findChild<QToolButton *>("widthButton")->click();
+        QVERIFY(panel->isVisible());
+        // 面板打开时 Esc 只收起面板，截图继续。
+        QTest::keyClick(overlay,Qt::Key_Escape);
+        QVERIFY(!panel->isVisible());
+        QCOMPARE(finished.count(),0);
+        QVERIFY(overlay->isVisible());
+        // 再按一次 Esc 才取消截图。
+        QTest::keyClick(overlay,Qt::Key_Escape);
+        QCOMPARE(finished.count(),1);
+    }
+    void toolButtonsCarryChineseLabels() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        const QStringList expected={QStringLiteral("选择"),QStringLiteral("矩形"),QStringLiteral("椭圆"),QStringLiteral("箭头"),
+                                    QStringLiteral("画笔"),QStringLiteral("文字"),QStringLiteral("马赛克")};
+        for (int i=0;i<expected.size();++i) {
+            auto *button=overlay->findChild<QToolButton *>(QStringLiteral("tool_%1").arg(i));
+            QVERIFY(button);
+            QCOMPARE(button->text(),expected.at(i));
+            // 图标 + 文字标签，箭头与画笔不再只能靠 tooltip 区分。
+            QVERIFY(button->toolButtonStyle()==Qt::ToolButtonTextUnderIcon);
+            QVERIFY(!button->icon().isNull());
+        }
+        auto *undo=overlay->findChild<QToolButton *>("undoButton"); QVERIFY(undo);
+        QCOMPARE(undo->text(),QStringLiteral("撤销"));
+        auto *redo=overlay->findChild<QToolButton *>("redoButton"); QVERIFY(redo);
+        QCOMPARE(redo->text(),QStringLiteral("重做"));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void colorPanelNeverCoversToolbar() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        auto *panel=overlay->findChild<QFrame *>("colorPanel"); QVERIFY(panel);
+        auto *toolbar=overlay->findChild<QFrame *>("captureToolbar"); QVERIFY(toolbar);
+        overlay->findChild<QToolButton *>("colorButton")->click();
+        QVERIFY(panel->isVisible());
+        QVERIFY2(!panel->geometry().intersects(toolbar->geometry()),
+                 qPrintable(QStringLiteral("取色面板 %1,%2 %3×%4 工具栏 %5,%6 %7×%8")
+                            .arg(panel->geometry().x()).arg(panel->geometry().y())
+                            .arg(panel->width()).arg(panel->height())
+                            .arg(toolbar->geometry().x()).arg(toolbar->geometry().y())
+                            .arg(toolbar->width()).arg(toolbar->height())));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void colorPanelAppliesPresetColor() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        auto *panel=overlay->findChild<QFrame *>("colorPanel"); QVERIFY(panel);
+        QVERIFY(!panel->isVisible());
+        auto *colorButton=overlay->findChild<QToolButton *>("colorButton"); QVERIFY(colorButton);
+        colorButton->click();
+        QVERIFY(panel->isVisible());
+        overlay->applyChosenColor(QColor("#123456"));
+        const quintptr before=colorButton->icon().cacheKey();
+        auto *preset=overlay->findChild<QToolButton *>("preset_1"); QVERIFY(preset);   // #ff6b6b
+        preset->click();
+        // 预设色写入设置：颜色以十六进制字符串存放，跨后端行为一致。
+        QCOMPARE(QSettings().value("annotation/color").toString(),QStringLiteral("#ff6b6b"));
+        // 工具栏色块按钮的图标随之更新
+        QVERIFY(colorButton->icon().cacheKey()!=before);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void colorPanelUpdatesSelectedAnnotation() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();      // 箭头
+        selectArea(overlay,QPoint(50,100),QPoint(350,100));
+        overlay->findChild<QToolButton *>("tool_0")->click();      // 选择工具
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));
+        QCOMPARE(overlay->annotations().size(),1);
+        overlay->findChild<QToolButton *>("colorButton")->click();
+        auto *preset=overlay->findChild<QToolButton *>("preset_4"); QVERIFY(preset);   // #ffb340
+        preset->click();
+        // 选中标注的颜色同步更新
+        QCOMPARE(overlay->annotations().first().color.name(),QStringLiteral("#ffb340"));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void recentColorsAreRemembered() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->applyChosenColor(QColor("#00b050"));
+        // 最近使用的颜色以逗号分隔的字符串存放，读回时不再依赖后端保留列表类型。
+        const QVariant recentValue=QSettings().value("annotation/recentColors");
+        QStringList stored=recentValue.toString().split(',',Qt::SkipEmptyParts);
+        if (stored.isEmpty()) stored=recentValue.toStringList();
+        for (QString &name : stored) name=name.trimmed();
+        QVERIFY(!stored.isEmpty());
+        QCOMPARE(stored.first(),QStringLiteral("#00b050"));
+        auto *recent=overlay->findChild<QToolButton *>("recent_0"); QVERIFY(recent);
+        QVERIFY(recent->isEnabled());
+        // 点最近使用的第一个色块能取回刚才的颜色。
+        recent->click();
+        QCOMPARE(QSettings().value("annotation/color").toString(),QStringLiteral("#00b050"));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void draggingAnnotationDoesNotRecropBase() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();      // 箭头
+        selectArea(overlay,QPoint(50,100),QPoint(350,100));        // 画一个箭头
+        overlay->findChild<QToolButton *>("tool_0")->click();      // 选择工具
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));  // 选中箭头
+        overlay->repaint();
+        const int crops=overlay->cropCount();
+        QVERIFY(crops>0);
+        // 拖动标注时选区不变，底图不应每帧重新裁剪。
+        QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));
+        for (int i=1;i<=10;++i) { QTest::mouseMove(overlay,QPoint(200+i,100)); overlay->repaint(); }
+        QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(210,100));
+        overlay->repaint();
+        QCOMPARE(overlay->cropCount(),crops);
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
 private:

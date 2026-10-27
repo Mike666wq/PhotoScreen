@@ -2,15 +2,15 @@
 #include "core/geometry.h"
 #include <QApplication>
 #include <QButtonGroup>
-#include <QColorDialog>
 #include <QEvent>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QKeyEvent>
 #include <QInputMethod>
 #include <QLabel>
-#include <QMenu>
+#include <QLinearGradient>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -22,6 +22,7 @@
 #include <QSettings>
 #include <QSlider>
 #include <QSizePolicy>
+#include <QStyle>
 #include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextEdit>
@@ -29,7 +30,7 @@
 #include <QAbstractTextDocumentLayout>
 #include <QToolButton>
 #include <QVBoxLayout>
-#include <QWidgetAction>
+#include <QVariant>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
@@ -44,25 +45,112 @@ QVector<QPointF> handles(const QRectF &r) {
             QPointF(r.right(),r.center().y()), r.bottomRight(), QPointF(r.center().x(),r.bottom()),
             r.bottomLeft(), QPointF(r.left(),r.center().y())};
 }
-QSlider *addSlider(QVBoxLayout *layout, const QString &title, int minimum, int maximum, int value, QLabel **valueLabel) {
-    auto *heading=new QHBoxLayout;
-    auto *name=new QLabel(title); auto *number=new QLabel(QString::number(value));
-    number->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    heading->addWidget(name); heading->addStretch(); heading->addWidget(number);
-    layout->addLayout(heading);
-    auto *slider=new QSlider(Qt::Horizontal); slider->setRange(minimum,maximum);
-    slider->setValue(value); slider->setAccessibleName(title); slider->setMinimumWidth(170);
-    layout->addWidget(slider); *valueLabel=number;
+// 自绘滑块：轨道、已选部分、刻度、手柄全部显式绘制，不依赖平台主题，
+// macOS 与 Windows 表现一致。轨道是 4px 圆角矩形，手柄是 14px 圆形。
+class StyledSlider : public QSlider {
+public:
+    explicit StyledSlider(QWidget *parent=nullptr) : QSlider(Qt::Horizontal,parent) { setMinimumHeight(26); }
+    // 轨道填充渐变（色相条、明度条用）；设置后不再画“已选部分”填充。
+    void setGrooveGradient(const QLinearGradient &gradient) { m_gradient=gradient; m_hasGradient=true; update(); }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        // 先清空，避免上一次绘制的轨道与手柄残留。
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.fillRect(rect(),Qt::transparent);
+        p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+        p.setRenderHint(QPainter::Antialiasing);
+        const int handleRadius=7, grooveHeight=4;
+        const int travel=qMax(1,width()-2*handleRadius);
+        const QRect groove(handleRadius,(height()-grooveHeight)/2,travel,grooveHeight);
+        const int position=QStyle::sliderPositionFromValue(minimum(),maximum(),value(),travel,groove.width());
+        // 轨道
+        p.setPen(QPen(QColor("#9aa0a6"),1));
+        p.setBrush(m_hasGradient ? QBrush(m_gradient) : QBrush(QColor("#dfe1e5")));
+        p.drawRoundedRect(groove,2,2);
+        // 已选部分
+        if (!m_hasGradient && position>0) {
+            p.setPen(Qt::NoPen); p.setBrush(QColor("#1687ef"));
+            p.drawRoundedRect(QRect(groove.left(),groove.top(),position,groove.height()),2,2);
+        }
+        // 刻度
+        if (tickPosition()!=NoTicks) {
+            const int step=tickInterval()>0?tickInterval():qMax(1,(maximum()-minimum())/10);
+            p.setPen(QPen(QColor("#8a8f96"),1));
+            for (int v=minimum(); v<=maximum(); v+=step) {
+                const int x=groove.left()+QStyle::sliderPositionFromValue(minimum(),maximum(),v,travel,groove.width());
+                p.drawLine(x,groove.bottom()+4,x,groove.bottom()+8);
+            }
+        }
+        // 手柄
+        p.setPen(QPen(QColor("#5f6368"),1)); p.setBrush(QColor("#ffffff"));
+        p.drawEllipse(QPoint(groove.left()+position,groove.center().y()),handleRadius,handleRadius);
+    }
+private:
+    QLinearGradient m_gradient;
+    bool m_hasGradient=false;
+};
+// 参数面板里的一行：名称 + 自绘滑块 + 紧贴滑块右端的数值。
+StyledSlider *addStyledSlider(QHBoxLayout *row, const QString &title, int minimum, int maximum, int value, QLabel **valueLabel) {
+    auto *name=new QLabel(title);
+    auto *slider=new StyledSlider; slider->setRange(minimum,maximum);
+    slider->setValue(value); slider->setAccessibleName(title); slider->setMinimumWidth(150);
+    auto *number=new QLabel(QString::number(value));
+    number->setAlignment(Qt::AlignRight | Qt::AlignVCenter); number->setMinimumWidth(30);
+    row->addWidget(name); row->addWidget(slider,1); row->addWidget(number);
+    *valueLabel=number;
     QObject::connect(slider,&QSlider::valueChanged,number,[number](int n) { number->setText(QString::number(n)); });
     return slider;
 }
-QVBoxLayout *sliderMenu(QToolButton *button) {
-    auto *menu=new QMenu(button);
-    auto *panel=new QWidget(menu);
-    auto *layout=new QVBoxLayout(panel); layout->setContentsMargins(12,10,12,10); layout->setSpacing(5);
-    auto *action=new QWidgetAction(menu); action->setDefaultWidget(panel); menu->addAction(action);
-    button->setMenu(menu); button->setPopupMode(QToolButton::InstantPopup);
-    return layout;
+// 给自绘滑块设置轨道渐变。成员指针声明为 QSlider*，这里用 dynamic_cast 取回具体类型。
+void setSliderGradient(QSlider *slider, const QLinearGradient &gradient) {
+    if (auto *styled=dynamic_cast<StyledSlider *>(slider)) styled->setGrooveGradient(gradient);
+}
+// 预设色板：8 个色相 × 3 个深浅，按列排布。
+QVector<QColor> presetColors() {
+    static const char *names[] = {
+        "#ff3b3b","#ff6b6b","#c62828",
+        "#ff9500","#ffb340","#c76b00",
+        "#ffcc00","#ffdd66","#b38f00",
+        "#34c759","#6ee08a","#1f8f3c",
+        "#00c7be","#5be0d8","#008f88",
+        "#0a84ff","#66b3ff","#0060cc",
+        "#bf5af2","#d79bff","#8a2fc4",
+        "#ff2d55","#ff7a95","#cc0f36"
+    };
+    QVector<QColor> result;
+    for (const char *name : names) result.append(QColor(QString::fromLatin1(name)));
+    return result;
+}
+// 设置里的颜色一律以十六进制字符串存放。
+// Windows 注册表后端与 macOS plist 后端对 QColor / QStringList 的类型保留方式不同：
+// 注册表会把它们降级成普通字符串，读回来时 QVariant 的实际类型与 plist 不一致，
+// 导致同一份代码在两个平台上的表现不同。显式存字符串可保证双平台读写一致。
+QColor colorFromSettings(const QVariant &value, const QColor &fallback) {
+    // 新格式：十六进制字符串。
+    const QColor parsed=QColor(value.toString().trimmed());
+    if (parsed.isValid()) return parsed;
+    // 旧格式：直接存的 QColor。
+    const QColor legacy=value.value<QColor>();
+    return legacy.isValid() ? legacy : fallback;
+}
+// 最近使用的颜色列表：兼容旧的 QStringList 格式与新的逗号分隔字符串。
+QStringList colorNamesFromSettings(const QVariant &value) {
+    QStringList names;
+    // 新格式：逗号分隔的字符串。
+    const QStringList parts=value.toString().split(',',Qt::SkipEmptyParts);
+    for (const QString &part : parts) {
+        const QString name=part.trimmed();
+        if (!name.isEmpty()) names.append(name);
+    }
+    if (!names.isEmpty()) return names;
+    // 旧格式：QStringList。
+    const QStringList legacy=value.toStringList();
+    for (const QString &name : legacy) {
+        const QString trimmed=name.trimmed();
+        if (!trimmed.isEmpty()) names.append(trimmed);
+    }
+    return names;
 }
 QIcon toolIcon(Tool tool) {
     QPixmap pixmap(24,24); pixmap.fill(Qt::transparent);
@@ -99,7 +187,7 @@ CaptureOverlay::CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWrit
     setGeometry(m_frame.screenGeometry);
     setCursor(Qt::CrossCursor);
     QSettings settings;
-    m_color = settings.value("annotation/color", QColor("#ff3b3b")).value<QColor>();
+    m_color = colorFromSettings(settings.value("annotation/color"), QColor("#ff3b3b"));
     m_lineWidth = settings.value("annotation/width", 3).toInt();
     m_fontSize = settings.value("annotation/fontSize", 18).toInt();
     m_fontWeight = qBound(100,settings.value("annotation/fontWeight", 400).toInt(),900);
@@ -122,8 +210,10 @@ void CaptureOverlay::buildToolbar() {
                             "QToolButton:checked{background:#cde5ff;} QToolButton:hover{background:#e2eaf5;}");
     auto *layout = new QHBoxLayout(m_toolbar); layout->setContentsMargins(5,4,5,4); layout->setSpacing(2);
     auto *scroll=new QScrollArea(m_toolbar); scroll->setObjectName("toolScroll"); scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff); scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    scroll->setMinimumWidth(36); scroll->setFixedHeight(48); scroll->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Fixed);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // 窄屏时工具区可横向滚动，滚动条始终可见，避免用户不知道可以横滚。
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    scroll->setMinimumWidth(36); scroll->setFixedHeight(66); scroll->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Fixed);
     auto *toolArea=new QWidget; auto *toolsLayout=new QHBoxLayout(toolArea);
     toolsLayout->setContentsMargins(0,0,0,0); toolsLayout->setSpacing(2); layout->addWidget(scroll,1);
     auto *group = new QButtonGroup(m_toolbar); group->setExclusive(true);
@@ -132,23 +222,27 @@ void CaptureOverlay::buildToolbar() {
        {QStringLiteral("文字"),Tool::Text},{QStringLiteral("马赛克"),Tool::Mosaic}};
     for (const auto &entry : tools) {
         auto *button = new QToolButton(toolArea); button->setIcon(toolIcon(entry.second)); button->setIconSize(QSize(22,22));
+        // 图标 + 中文文字标签：箭头与画笔不再只能靠 tooltip 区分。
+        button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon); button->setText(entry.first);
+        QFont labelFont=button->font(); labelFont.setPixelSize(11); button->setFont(labelFont);
         button->setToolTip(entry.first); button->setAccessibleName(entry.first); button->setCheckable(true);
         button->setObjectName(QStringLiteral("tool_%1").arg(int(entry.second)));
         group->addButton(button); toolsLayout->addWidget(button);
         if (entry.second == Tool::Select) button->setChecked(true);
-        connect(button, &QToolButton::clicked, this, [this, tool=entry.second] { commitText(); commitStyleEdit(); setTool(tool); });
+        connect(button, &QToolButton::clicked, this, [this, tool=entry.second] { commitText(); commitStyleEdit(); hidePanels(); setTool(tool); });
     }
     m_colorButton = new QToolButton(toolArea); m_colorButton->setToolTip(QStringLiteral("颜色")); m_colorButton->setAccessibleName(QStringLiteral("颜色"));
     m_colorButton->setObjectName("colorButton"); toolsLayout->addWidget(m_colorButton); updateColorSwatch();
-    connect(m_colorButton, &QToolButton::clicked, this, [this] {
-        const QColor chosen = QColorDialog::getColor(m_color, this, QStringLiteral("标注颜色"));
-        if (chosen.isValid()) applyChosenColor(chosen);
-    });
+    connect(m_colorButton, &QToolButton::clicked, this, [this] { toggleColorPanel(); });
     m_widthButton=new QToolButton(toolArea); m_widthButton->setObjectName("widthButton");
     m_widthButton->setText(QStringLiteral("粗细 %1").arg(m_lineWidth)); m_widthButton->setToolTip(QStringLiteral("线宽 / 箭头粗细"));
     m_widthButton->setAccessibleName(QStringLiteral("线宽 / 箭头粗细")); toolsLayout->addWidget(m_widthButton);
-    m_widthControl=addSlider(sliderMenu(m_widthButton),QStringLiteral("线宽 / 箭头粗细"),1,20,m_lineWidth,&m_widthValue);
-    m_widthControl->setObjectName("widthControl"); m_widthValue->setObjectName("widthValue");
+    connect(m_widthButton, &QToolButton::clicked, this, [this] { toggleStylePanel(); });
+    m_fontButton=new QToolButton(toolArea); m_fontButton->setObjectName("fontButton"); m_fontButton->setText(QStringLiteral("文字"));
+    m_fontButton->setToolTip(QStringLiteral("文字大小和粗细")); m_fontButton->setAccessibleName(QStringLiteral("文字大小和粗细")); toolsLayout->addWidget(m_fontButton);
+    connect(m_fontButton, &QToolButton::clicked, this, [this] { toggleStylePanel(); });
+    buildStylePanel();
+    buildColorPanel();
     connect(m_widthControl, &QSlider::valueChanged, this, [this](int n) {
         m_lineWidth=n; QSettings().setValue("annotation/width",n);
         m_widthButton->setText(QStringLiteral("粗细 %1").arg(n));
@@ -159,15 +253,6 @@ void CaptureOverlay::buildToolbar() {
             applyStyleChange(i,item);
         }
     });
-    m_fontButton=new QToolButton(toolArea); m_fontButton->setObjectName("fontButton"); m_fontButton->setText(QStringLiteral("文字"));
-    m_fontButton->setToolTip(QStringLiteral("文字大小和粗细")); m_fontButton->setAccessibleName(QStringLiteral("文字大小和粗细")); toolsLayout->addWidget(m_fontButton);
-    auto *fontLayout=sliderMenu(m_fontButton);
-    m_fontControl=addSlider(fontLayout,QStringLiteral("字号"),10,72,m_fontSize,&m_fontValue);
-    m_fontControl->setObjectName("fontControl"); m_fontValue->setObjectName("fontValue");
-    m_fontWeightControl=addSlider(fontLayout,QStringLiteral("字体粗细"),100,900,m_fontWeight,&m_fontWeightValue);
-    m_fontWeightControl->setObjectName("fontWeightControl"); m_fontWeightValue->setObjectName("fontWeightValue");
-    m_fontWeightControl->setSingleStep(100); m_fontWeightControl->setPageStep(100);
-    m_fontWeightControl->setTickPosition(QSlider::TicksBelow); m_fontWeightControl->setTickInterval(100);
     connect(m_fontControl, &QSlider::valueChanged, this, [this](int n) {
         m_fontSize=n; QSettings().setValue("annotation/fontSize",n);
         m_fontButton->setText(QStringLiteral("文字 %1").arg(n));
@@ -202,8 +287,9 @@ void CaptureOverlay::buildToolbar() {
         connect(slider,&QSlider::sliderReleased,this,[this] { commitStyleEdit(); });
     }
     toolArea->adjustSize(); scroll->setWidget(toolArea); scroll->setMaximumWidth(toolArea->sizeHint().width()+2);
-    m_undoButton = new QToolButton(m_toolbar); m_undoButton->setObjectName("undoButton"); m_undoButton->setText(QStringLiteral("↶")); m_undoButton->setToolTip(QStringLiteral("撤销")); m_undoButton->setEnabled(false); layout->addWidget(m_undoButton);
-    m_redoButton = new QToolButton(m_toolbar); m_redoButton->setObjectName("redoButton"); m_redoButton->setText(QStringLiteral("↷")); m_redoButton->setToolTip(QStringLiteral("重做")); m_redoButton->setEnabled(false); layout->addWidget(m_redoButton);
+    // 撤销/重做改用文字：符号在部分字体下缺字形，渲染不一致。
+    m_undoButton = new QToolButton(m_toolbar); m_undoButton->setObjectName("undoButton"); m_undoButton->setText(QStringLiteral("撤销")); m_undoButton->setToolTip(QStringLiteral("撤销")); m_undoButton->setAccessibleName(QStringLiteral("撤销")); m_undoButton->setEnabled(false); layout->addWidget(m_undoButton);
+    m_redoButton = new QToolButton(m_toolbar); m_redoButton->setObjectName("redoButton"); m_redoButton->setText(QStringLiteral("重做")); m_redoButton->setToolTip(QStringLiteral("重做")); m_redoButton->setAccessibleName(QStringLiteral("重做")); m_redoButton->setEnabled(false); layout->addWidget(m_redoButton);
     connect(m_undoButton, &QToolButton::clicked, this, [this] { commitText(); commitStyleEdit(); m_document.undoStack()->undo(); });
     connect(m_redoButton, &QToolButton::clicked, this, [this] { commitText(); commitStyleEdit(); m_document.undoStack()->redo(); });
     auto *cancel = new QToolButton(m_toolbar); cancel->setObjectName("cancelButton"); cancel->setText(QStringLiteral("×")); cancel->setToolTip(QStringLiteral("取消")); cancel->setAccessibleName(QStringLiteral("取消")); layout->addWidget(cancel);
@@ -211,6 +297,228 @@ void CaptureOverlay::buildToolbar() {
     connect(cancel, &QToolButton::clicked, this, &CaptureOverlay::cancelCapture);
     connect(done, &QToolButton::clicked, this, &CaptureOverlay::finishCapture);
     m_toolbar->adjustSize(); m_toolbar->hide();
+}
+void CaptureOverlay::buildStylePanel() {
+    // 参数面板是覆盖层的普通子控件，不是原生菜单：
+    // macOS 的 NSMenu 会接管鼠标，内嵌滑块拿不到可靠的拖拽事件。
+    m_stylePanel=new QFrame(this);
+    m_stylePanel->setObjectName("stylePanel");
+    m_stylePanel->setStyleSheet("QFrame#stylePanel{background:#f8f8f8;border:1px solid #aaa;border-radius:6px;}"
+                                "QLabel{color:#222;}");
+    auto *layout=new QVBoxLayout(m_stylePanel);
+    layout->setContentsMargins(12,10,12,10); layout->setSpacing(6);
+
+    auto *widthRow=new QHBoxLayout;
+    m_widthControl=addStyledSlider(widthRow,QStringLiteral("粗细"),1,20,m_lineWidth,&m_widthValue);
+    m_widthControl->setObjectName("widthControl"); m_widthValue->setObjectName("widthValue");
+    layout->addLayout(widthRow);
+
+    auto *fontRow=new QHBoxLayout;
+    m_fontControl=addStyledSlider(fontRow,QStringLiteral("字号"),10,72,m_fontSize,&m_fontValue);
+    m_fontControl->setObjectName("fontControl"); m_fontValue->setObjectName("fontValue");
+    layout->addLayout(fontRow);
+
+    auto *weightRow=new QHBoxLayout;
+    m_fontWeightControl=addStyledSlider(weightRow,QStringLiteral("字重"),100,900,m_fontWeight,&m_fontWeightValue);
+    m_fontWeightControl->setObjectName("fontWeightControl"); m_fontWeightValue->setObjectName("fontWeightValue");
+    m_fontWeightControl->setSingleStep(100); m_fontWeightControl->setPageStep(100);
+    m_fontWeightControl->setTickPosition(QSlider::TicksBelow); m_fontWeightControl->setTickInterval(100);
+    layout->addLayout(weightRow);
+
+    m_stylePanel->hide();
+}
+void CaptureOverlay::toggleStylePanel() {
+    if (m_stylePanel->isVisible()) { hidePanels(); return; }
+    hidePanels();
+    m_stylePanel->show();
+    // 面板默认贴在工具栏上沿外侧，避免压住撤销/重做/取消/完成。
+    const QPoint anchor=m_toolbar->mapTo(this,QPoint(m_toolbar->width()/2,0));
+    positionPanel(m_stylePanel,anchor,true);
+}
+void CaptureOverlay::hidePanels() {
+    if (m_stylePanel) m_stylePanel->hide();
+    if (m_colorPanel) m_colorPanel->hide();
+}
+bool CaptureOverlay::panelVisible() const {
+    return (m_stylePanel && m_stylePanel->isVisible()) || (m_colorPanel && m_colorPanel->isVisible());
+}
+void CaptureOverlay::buildColorPanel() {
+    // 自绘取色面板：原生 QColorDialog 在 macOS 会被覆盖层（NSScreenSaverWindowLevel）吞掉。
+    m_colorPanel=new QFrame(this);
+    m_colorPanel->setObjectName("colorPanel");
+    m_colorPanel->setStyleSheet("QFrame#colorPanel{background:#f8f8f8;border:1px solid #aaa;border-radius:6px;}"
+                                "QLabel{color:#222;}");
+    auto *layout=new QVBoxLayout(m_colorPanel);
+    layout->setContentsMargins(12,10,12,10); layout->setSpacing(8);
+
+    auto *grid=new QGridLayout; grid->setSpacing(4);
+    const QVector<QColor> presets=presetColors();
+    for (int i=0;i<presets.size();++i) {
+        auto *button=new QToolButton(m_colorPanel);
+        button->setObjectName(QStringLiteral("preset_%1").arg(i));
+        button->setFixedSize(22,22);
+        button->setToolTip(presets.at(i).name());
+        button->setAccessibleName(presets.at(i).name());
+        connect(button,&QToolButton::clicked,this,[this,color=presets.at(i)] { applyChosenColor(color); });
+        grid->addWidget(button,i/8,i%8);
+    }
+    layout->addLayout(grid);
+
+    auto *hueRow=new QHBoxLayout;
+    auto *hueName=new QLabel(QStringLiteral("色相"));
+    m_hueControl=new StyledSlider; m_hueControl->setRange(0,360); m_hueControl->setValue(0);
+    m_hueControl->setObjectName("hueControl"); m_hueControl->setAccessibleName(QStringLiteral("色相"));
+    QLinearGradient hue; hue.setCoordinateMode(QGradient::ObjectBoundingMode);
+    hue.setColorAt(0.00,QColor("#ff0000")); hue.setColorAt(0.17,QColor("#ffff00"));
+    hue.setColorAt(0.33,QColor("#00ff00")); hue.setColorAt(0.50,QColor("#00ffff"));
+    hue.setColorAt(0.67,QColor("#0000ff")); hue.setColorAt(0.83,QColor("#ff00ff"));
+    hue.setColorAt(1.00,QColor("#ff0000"));
+    setSliderGradient(m_hueControl,hue);
+    hueRow->addWidget(hueName); hueRow->addWidget(m_hueControl,1);
+    layout->addLayout(hueRow);
+
+    auto *valueRow=new QHBoxLayout;
+    auto *valueName=new QLabel(QStringLiteral("明度"));
+    m_valueControl=new StyledSlider; m_valueControl->setRange(0,100); m_valueControl->setValue(100);
+    m_valueControl->setObjectName("valueControl"); m_valueControl->setAccessibleName(QStringLiteral("明度"));
+    valueRow->addWidget(valueName); valueRow->addWidget(m_valueControl,1);
+    layout->addLayout(valueRow);
+
+    m_colorPreview=new QToolButton(m_colorPanel);
+    m_colorPreview->setObjectName("colorPreview");
+    m_colorPreview->setFixedHeight(24);
+    m_colorPreview->setToolTip(QStringLiteral("使用当前颜色"));
+    m_colorPreview->setAccessibleName(QStringLiteral("颜色预览"));
+    layout->addWidget(m_colorPreview);
+
+    auto *recent=new QHBoxLayout; recent->setSpacing(4);
+    for (int i=0;i<8;++i) {
+        auto *button=new QToolButton(m_colorPanel);
+        button->setObjectName(QStringLiteral("recent_%1").arg(i));
+        button->setFixedSize(18,18);
+        connect(button,&QToolButton::clicked,this,[this,i] { applyRecentColor(i); });
+        recent->addWidget(button);
+    }
+    layout->addLayout(recent);
+
+    connect(m_hueControl,&QSlider::valueChanged,this,[this](int) { updateColorPreview(); });
+    connect(m_valueControl,&QSlider::valueChanged,this,[this](int) { updateColorPreview(); });
+    connect(m_hueControl,&QSlider::sliderReleased,this,[this] { applyChosenColor(previewColor()); });
+    connect(m_valueControl,&QSlider::sliderReleased,this,[this] { applyChosenColor(previewColor()); });
+    connect(m_colorPreview,&QToolButton::clicked,this,[this] { applyChosenColor(previewColor()); });
+
+    updateColorPreview();
+    updateRecentButtons();
+    updatePresetHighlight();
+    m_colorPanel->hide();
+}
+void CaptureOverlay::toggleColorPanel() {
+    if (m_colorPanel->isVisible()) { hidePanels(); return; }
+    hidePanels();
+    m_colorPanel->show();
+    updateColorPreview();
+    updateRecentButtons();
+    updatePresetHighlight();
+    const QPoint anchor=m_colorButton->mapTo(this,QPoint(m_colorButton->width()/2,m_colorButton->height()));
+    positionPanel(m_colorPanel,anchor,false);
+}
+QColor CaptureOverlay::previewColor() const {
+    const int h=m_hueControl ? m_hueControl->value() : 0;
+    const int v=m_valueControl ? m_valueControl->value() : 100;
+    return QColor::fromHsvF(qBound(0,h,360)/360.0, 1.0, qBound(0,v,100)/100.0);
+}
+void CaptureOverlay::updateColorPreview() {
+    if (!m_colorPreview) return;
+    const QColor color=previewColor();
+    m_colorPreview->setStyleSheet(QStringLiteral("QToolButton#colorPreview{background:%1;border:1px solid #999;border-radius:3px;}").arg(color.name()));
+    if (m_valueControl && m_hueControl) {
+        // 明度条：白 → 当前色相的纯色。
+        QLinearGradient gradient; gradient.setCoordinateMode(QGradient::ObjectBoundingMode);
+        gradient.setColorAt(0.0,QColor(Qt::white));
+        gradient.setColorAt(1.0,QColor::fromHsvF(m_hueControl->value()/360.0,1.0,1.0));
+        setSliderGradient(m_valueControl,gradient);
+    }
+}
+QVector<QColor> CaptureOverlay::recentColors() const {
+    QVector<QColor> result;
+    const QStringList stored=colorNamesFromSettings(QSettings().value("annotation/recentColors"));
+    for (const QString &name : stored) { const QColor color(name); if (color.isValid()) result.append(color); }
+    return result;
+}
+void CaptureOverlay::rememberColor(const QColor &color) {
+    if (!color.isValid()) return;
+    QStringList stored=colorNamesFromSettings(QSettings().value("annotation/recentColors"));
+    stored.removeAll(color.name());
+    stored.prepend(color.name());
+    while (stored.size()>8) stored.removeLast();
+    // 用逗号分隔的字符串存放：跨平台读回时列表类型不会被后端改写。
+    QSettings().setValue("annotation/recentColors",stored.join(','));
+    updateRecentButtons();
+}
+void CaptureOverlay::updateRecentButtons() {
+    if (!m_colorPanel) return;
+    const QVector<QColor> colors=recentColors();
+    for (int i=0;i<8;++i) {
+        auto *button=m_colorPanel->findChild<QToolButton *>(QStringLiteral("recent_%1").arg(i));
+        if (!button) continue;
+        const QColor color=i<colors.size()?colors.at(i):QColor();
+        if (color.isValid()) {
+            button->setStyleSheet(QStringLiteral("QToolButton{background:%1;border:1px solid #999;}").arg(color.name()));
+            button->setToolTip(color.name());
+            button->setEnabled(true);
+        } else {
+            button->setStyleSheet(QStringLiteral("QToolButton{background:transparent;border:1px dashed #ccc;}"));
+            button->setToolTip(QString());
+            button->setEnabled(false);
+        }
+    }
+}
+void CaptureOverlay::updatePresetHighlight() {
+    if (!m_colorPanel) return;
+    const QVector<QColor> presets=presetColors();
+    for (int i=0;i<presets.size();++i) {
+        auto *button=m_colorPanel->findChild<QToolButton *>(QStringLiteral("preset_%1").arg(i));
+        if (!button) continue;
+        const bool current=(presets.at(i)==m_color);
+        button->setStyleSheet(QStringLiteral("QToolButton{background:%1;border:%2 solid %3;border-radius:3px;}")
+                              .arg(presets.at(i).name(),current?"2px":"1px",current?"#1687ef":"#999"));
+    }
+}
+void CaptureOverlay::applyRecentColor(int index) {
+    const QVector<QColor> colors=recentColors();
+    if (index<0 || index>=colors.size()) return;
+    applyChosenColor(colors.at(index));
+}
+void CaptureOverlay::positionPanel(QFrame *panel, const QPoint &anchor, bool preferAbove) {
+    // 上次定位留下的最大高度限制要先清掉，否则面板无法恢复原尺寸。
+    panel->setMaximumHeight(QWIDGETSIZE_MAX);
+    panel->adjustSize();
+    const QRect bounds=rect();
+    const QRect toolbarRect=m_toolbar->geometry();
+    const int gap=6;
+    // 工具栏所占的横带是禁区：面板只能整块落在工具栏上方或下方，
+    // 候选位置直接相对工具栏计算，不再依赖锚点，跨平台结果一致。
+    const int aboveY=toolbarRect.top()-gap-panel->height();
+    const int belowY=toolbarRect.bottom()+1+gap;
+    const bool aboveFits=aboveY>=0 && aboveY+panel->height()<=bounds.height();
+    const bool belowFits=belowY>=0 && belowY+panel->height()<=bounds.height();
+    int y=-1;
+    if (preferAbove ? aboveFits : belowFits) y=preferAbove?aboveY:belowY;
+    else if (preferAbove ? belowFits : aboveFits) y=preferAbove?belowY:aboveY;
+    if (y<0) {
+        // 两侧都放不下时，先压缩面板高度再放进较空的一侧，保证不压住工具栏。
+        const int room=qMax(toolbarRect.top()-gap, bounds.height()-(toolbarRect.bottom()+1)-gap);
+        if (room>0 && room<panel->height() && room>=panel->minimumSizeHint().height()) {
+            panel->setMaximumHeight(room);
+            panel->adjustSize();
+        }
+        // 面板高度变了，候选位置要按新高度重算。
+        y=preferAbove ? toolbarRect.top()-gap-panel->height() : toolbarRect.bottom()+1+gap;
+        y=qBound(0,y,qMax(0,bounds.height()-panel->height()));
+    }
+    const int x=qBound(0,anchor.x()-panel->width()/2,qMax(0,bounds.width()-panel->width()));
+    panel->move(x,y);
+    panel->raise();
 }
 void CaptureOverlay::updateColorSwatch() {
     if (!m_colorButton) return;
@@ -220,7 +528,7 @@ void CaptureOverlay::updateColorSwatch() {
 }
 void CaptureOverlay::applyChosenColor(const QColor &color) {
     if (!color.isValid()) return;
-    m_color=color; QSettings().setValue("annotation/color",color); updateColorSwatch();
+    m_color=color; QSettings().setValue("annotation/color",color.name()); updateColorSwatch();
     if (m_textEditor) {
         // 显式改色才更新正在编辑的文字颜色，颜色与预览始终保持一致。
         m_textColor=color;
@@ -229,6 +537,8 @@ void CaptureOverlay::applyChosenColor(const QColor &color) {
     } else if (m_selected>=0 && m_selected<m_document.items().size()) {
         const int i=m_selected; auto item=m_document.items()[i]; item.color=color; m_document.replace(i,item); m_selected=i; update();
     }
+    rememberColor(color);
+    updatePresetHighlight();
 }
 void CaptureOverlay::positionToolbar() {
     if (m_selection.isEmpty()) { m_toolbar->hide(); return; }
@@ -294,13 +604,29 @@ QVector<Annotation> CaptureOverlay::previewItems() const {
     }
     return items;
 }
+void CaptureOverlay::ensureRenderCache() {
+    const QRect crop=pixelRect(m_selection,size(),m_frame.image.size());
+    if (crop.isEmpty()) { m_baseCache=QImage(); m_annoCache=QImage(); return; }
+    if (m_cacheSelection!=m_selection || m_cacheRect!=crop) {
+        m_cacheSelection=m_selection; m_cacheRect=crop;
+        // 底图只在选区变化时重新裁剪：拖动标注时不再每帧分配并复制整块选区。
+        m_baseCache=cropPixels(m_frame.image,size(),m_selection);
+        ++m_cropCount;
+        m_annoCache=QImage(m_baseCache.size(),QImage::Format_ARGB32_Premultiplied);
+    }
+    if (m_annoCache.isNull()) m_annoCache=QImage(m_baseCache.size(),QImage::Format_ARGB32_Premultiplied);
+    m_annoCache.fill(Qt::transparent);
+    const qreal scaleX=m_frame.image.width()/qMax<qreal>(1,size().width());
+    const qreal scaleY=m_frame.image.height()/qMax<qreal>(1,size().height());
+    renderAnnotationLayer(m_annoCache,m_baseCache,crop,scaleX,scaleY,previewItems());
+}
 void CaptureOverlay::paintEvent(QPaintEvent *) {
     QPainter p(this); p.setRenderHint(QPainter::SmoothPixmapTransform, false);
     p.drawImage(rect(),m_frame.image);
     p.fillRect(rect(),QColor(0,0,0,110));
     if (!m_selection.isEmpty()) {
-        const QImage selected=renderSelection(m_frame.image,size(),m_selection,previewItems());
-        if (!selected.isNull()) p.drawImage(m_selection,selected);
+        ensureRenderCache();
+        if (!m_baseCache.isNull()) { p.drawImage(m_selection,m_baseCache); p.drawImage(m_selection,m_annoCache); }
         p.setPen(QPen(QColor("#1687ef"),2)); p.setBrush(Qt::NoBrush); p.drawRect(m_selection);
         p.setBrush(Qt::white);
         for (const auto &point : handles(m_selection)) p.drawRect(handleRect(point));
@@ -346,6 +672,8 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
     // 右键：清空选区重新框选，但保留已画的标注与撤销历史。
     if (event->button()==Qt::RightButton) { if (m_selection.isEmpty()) cancelCapture(); else { commitText(); clearSelection(); } return; }
     if (event->button()!=Qt::LeftButton) return;
+    // 点到画布就收起参数面板。
+    hidePanels();
     commitText(); m_press=boundedPoint(event->position()); m_pointer=m_press;
     if (m_selection.isEmpty()) { m_drag=Drag::NewSelection; m_startRect={}; return; }
     if (m_tool==Tool::Select) {
@@ -517,7 +845,11 @@ bool CaptureOverlay::eventFilter(QObject *obj, QEvent *event) {
     return QWidget::eventFilter(obj,event);
 }
 void CaptureOverlay::keyPressEvent(QKeyEvent *event) {
-    if (event->key()==Qt::Key_Escape) { cancelCapture(); return; }
+    if (event->key()==Qt::Key_Escape) {
+        // 面板打开时 Esc 只收起面板，不取消截图。
+        if (panelVisible()) { hidePanels(); return; }
+        cancelCapture(); return;
+    }
     if (event->matches(QKeySequence::Undo)) { commitStyleEdit(); m_document.undoStack()->undo(); return; }
     if (event->matches(QKeySequence::Redo)) { commitStyleEdit(); m_document.undoStack()->redo(); return; }
     if (event->key()==Qt::Key_Delete || event->key()==Qt::Key_Backspace) { if (m_selected>=0) m_document.remove(m_selected); return; }

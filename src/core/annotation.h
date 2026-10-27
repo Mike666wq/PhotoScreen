@@ -60,4 +60,9 @@ QImage renderSelection(const QImage &source, const QSizeF &logicalSize,
 // 保证任何一屏都不被降采样。选区只落在一块屏幕上时与上面的单屏实现逐像素一致。
 QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &selection,
                        const QVector<Annotation> &annotations);
+// 标注图层：把标注画到 out 上（out 可复用，避免每帧重新分配）。
+// base 是裁剪后的底图，马赛克从 base 取样，因此底图与标注可以分层缓存。
+// crop 是选区在源图中的像素矩形，scaleX/scaleY 是源图像素与逻辑单位的比例。
+void renderAnnotationLayer(QImage &out, const QImage &base, const QRect &crop, qreal scaleX, qreal scaleY,
+                           const QVector<Annotation> &annotations);
 }

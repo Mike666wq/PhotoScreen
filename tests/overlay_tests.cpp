@@ -155,6 +155,139 @@ private slots:
         QVERIFY(overlay->rect().contains(visible));
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
+    void styleAdjustmentIsSingleUndoStep() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();      // 箭头
+        selectArea(overlay,QPoint(50,100),QPoint(350,100));        // 画一个箭头
+        overlay->findChild<QToolButton *>("tool_0")->click();      // 选择工具
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));  // 选中箭头
+        auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
+        QCOMPARE(overlay->annotations().size(),1);
+        width->setValue(3);
+        // 拖动前的基准宽度，撤销后必须回到这里。
+        const qreal widthBeforeDrag=overlay->annotations().first().width;
+        const int stepsBefore=undoSteps(overlay);
+        // 模拟一次拖动：按下后连续变值，最后释放。整段拖动只产生一步撤销。
+        emit width->sliderPressed();
+        for (int v=5;v<=12;++v) width->setValue(v);
+        emit width->sliderReleased();
+        QCOMPARE(undoSteps(overlay),stepsBefore+1);
+        QCOMPARE(overlay->annotations().first().width,12.0);
+        // 撤销一次应回到拖动前的状态，而不是只回退一个数值。
+        overlay->findChild<QToolButton *>("undoButton")->click();
+        QCOMPARE(undoSteps(overlay),stepsBefore);
+        QCOMPARE(overlay->annotations().first().width,widthBeforeDrag);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void keyboardStyleChangeIsSingleUndoStep() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();
+        selectArea(overlay,QPoint(50,100),QPoint(350,100));
+        overlay->findChild<QToolButton *>("tool_0")->click();
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));
+        auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
+        QCOMPARE(overlay->annotations().size(),1);
+        width->setValue(3);
+        const qreal widthBeforeChange=overlay->annotations().first().width;
+        const int stepsBefore=undoSteps(overlay);
+        // 键盘方向键调整：不经过 sliderPressed，每次调整仍应各自可撤销。
+        width->setValue(6);
+        QCOMPARE(undoSteps(overlay),stepsBefore+1);
+        QCOMPARE(overlay->annotations().first().width,6.0);
+        overlay->findChild<QToolButton *>("undoButton")->click();
+        QCOMPARE(undoSteps(overlay),stepsBefore);
+        QCOMPARE(overlay->annotations().first().width,widthBeforeChange);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void undoStillWorksAfterInterruptedDrag() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();
+        selectArea(overlay,QPoint(50,100),QPoint(350,100));
+        overlay->findChild<QToolButton *>("tool_0")->click();
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));
+        auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
+        width->setValue(3);
+        // 模拟滑块拖动中途失去 grab：按下后不释放，直接切换工具。
+        emit width->sliderPressed();
+        width->setValue(9);
+        QVERIFY(overlay->styleEditActive());
+        overlay->findChild<QToolButton *>("tool_3")->click();
+        // 会话必须已提交，不能残留未闭合状态；撤销必须仍然可用。
+        QVERIFY(!overlay->styleEditActive());
+        auto *undo=overlay->findChild<QToolButton *>("undoButton"); QVERIFY(undo);
+        QVERIFY(undo->isEnabled());
+        const int steps=undoSteps(overlay);
+        undo->click();
+        QCOMPARE(undoSteps(overlay),steps-1);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void editingExistingTextKeepsItsColor() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_5")->click();      // 文字
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        const quintptr oldEditor=quintptr(editor);
+        QInputMethodEvent input; input.setCommitString(QStringLiteral("彩色文字"));
+        QApplication::sendEvent(editor,&input);
+        QTest::keyClick(editor,Qt::Key_Return,Qt::ControlModifier);   // 提交
+        QCoreApplication::processEvents();
+        QCOMPARE(overlay->annotations().size(),1);
+        const QColor original=overlay->annotations().first().color;
+        // 切回选择工具后双击已有文字，进入编辑态。
+        overlay->findChild<QToolButton *>("tool_0")->click();
+        QTest::mouseDClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(60,60));
+        // 上一个编辑器可能还没被回收，取最新的那个。
+        const auto editors=overlay->findChildren<QTextEdit *>("annotationTextEditor"); QVERIFY(!editors.isEmpty());
+        auto *editor2=editors.last();
+        QVERIFY(quintptr(editor2)!=oldEditor);
+        // 编辑器预览必须是该标注自身的颜色，而不是工具栏当前色。
+        QCOMPARE(editor2->currentCharFormat().foreground().color().name(),original.name());
+        // 编辑过程中调整字号，颜色不得改变。
+        auto *font=overlay->findChild<QSlider *>("fontControl"); QVERIFY(font);
+        font->setValue(44);
+        QCOMPARE(editor2->currentCharFormat().foreground().color().name(),original.name());
+        QTest::keyClick(editor2,Qt::Key_Return,Qt::ControlModifier);
+        QCoreApplication::processEvents();
+        QCOMPARE(overlay->annotations().first().color.name(),original.name());
+        QCOMPARE(overlay->annotations().first().fontSize,44);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void explicitTextColorChangeMatchesPreview() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_5")->click();      // 文字
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QInputMethodEvent input; input.setCommitString(QStringLiteral("换色文字"));
+        QApplication::sendEvent(editor,&input);
+        QTest::keyClick(editor,Qt::Key_Return,Qt::ControlModifier);   // 提交
+        QCoreApplication::processEvents();
+        QCOMPARE(overlay->annotations().size(),1);
+        overlay->findChild<QToolButton *>("tool_0")->click();
+        QTest::mouseDClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(60,60));
+        // 上一个编辑器可能还没被回收，取最新的那个。
+        const auto editors=overlay->findChildren<QTextEdit *>("annotationTextEditor"); QVERIFY(!editors.isEmpty());
+        auto *editor2=editors.last();
+        // 显式换色：编辑器预览必须立刻更新。
+        overlay->applyChosenColor(QColor("#00b050"));
+        QCOMPARE(editor2->currentCharFormat().foreground().color().name(),QStringLiteral("#00b050"));
+        // 提交结果必须与预览一致。
+        QTest::keyClick(editor2,Qt::Key_Return,Qt::ControlModifier);
+        QCoreApplication::processEvents();
+        QCOMPARE(overlay->annotations().first().color.name(),QStringLiteral("#00b050"));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+private:
+    static int undoSteps(CaptureOverlay *overlay) { return overlay->undoDepth(); }
 };
 QTEST_MAIN(OverlayTests)
 #include "overlay_tests.moc"

@@ -4,6 +4,7 @@
 #include <QMessageBox>
 #include <QScreen>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
@@ -56,6 +57,34 @@ private slots:
         QVERIFY(!copied.isNull());
         const QColor body=copied.pixelColor(440,148); QVERIFY(body.red()>200 && body.green()<130 && body.blue()<130);
         QCOMPARE(copied.pixelColor(660,280),QColor(Qt::white));
+    }
+    void selectionHandleOverAnnotation() {
+        QImage copied;
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[&](const QImage &image,QString *) { copied=image; return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();
+        selectArea(overlay,QPoint(10,10),QPoint(250,200));
+        overlay->findChild<QToolButton *>("tool_0")->click();
+        selectArea(overlay,QPoint(10,10),QPoint(30,30));
+        QTest::keyClick(overlay,Qt::Key_Return);
+        QCOMPARE(copied.size(),QSize(960,740));
+    }
+    void arrowThicknessCanBeEdited() {
+        QImage copied;
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[&](const QImage &image,QString *) { copied=image; return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();
+        auto *width=overlay->findChild<QSpinBox *>("widthControl"); QVERIFY(width); width->setValue(3);
+        selectArea(overlay,QPoint(50,100),QPoint(350,100));
+        overlay->findChild<QToolButton *>("tool_0")->click();
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));
+        width->setValue(9);
+        QTest::keyClick(overlay,Qt::Key_Return);
+        QVERIFY(!copied.isNull());
+        const QColor widened=copied.pixelColor(500,190);
+        QVERIFY(widened.red()>200 && widened.green()<130 && widened.blue()<130);
     }
     void textInputAndFailureRetry() {
         QImage copied; int attempts=0;

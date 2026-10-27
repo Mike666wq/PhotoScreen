@@ -257,6 +257,8 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
         if (m_selected>=0 && m_selected<m_document.items().size() && handleRect(m_document.items()[m_selected].bounds().bottomRight()).contains(m_press)) {
             m_drag=Drag::ResizeObject; m_startAnnotation=m_document.items()[m_selected]; m_startRect=m_startAnnotation.bounds(); return;
         }
+        m_handle=selectionHandleAt(m_press);
+        if (m_handle>=0) { m_selected=-1; m_startRect=m_selection; m_drag=Drag::ResizeSelection; update(); return; }
         const int object=objectAt(m_press);
         if (object>=0) {
             m_selected=object; m_startAnnotation=m_document.items()[object]; m_color=m_startAnnotation.color; updateColorSwatch();
@@ -264,9 +266,8 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
             m_widthControl->setValue(qRound(m_startAnnotation.width)); m_fontControl->setValue(m_startAnnotation.fontSize);
             m_drag=Drag::MoveObject; update(); return;
         }
-        m_selected=-1; m_handle=selectionHandleAt(m_press); m_startRect=m_selection;
-        if (m_handle>=0) m_drag=Drag::ResizeSelection;
-        else if (m_selection.contains(m_press)) m_drag=Drag::MoveSelection;
+        m_selected=-1; m_startRect=m_selection;
+        if (m_selection.contains(m_press)) m_drag=Drag::MoveSelection;
         else { resetDocument(); m_selection={}; m_toolbar->hide(); m_drag=Drag::NewSelection; }
     } else if (m_selection.contains(m_press)) {
         if (m_tool==Tool::Text) { startText(m_press); return; }

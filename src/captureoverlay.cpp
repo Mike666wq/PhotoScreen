@@ -459,24 +459,28 @@ void CaptureOverlay::applyRecentColor(int index) {
 }
 void CaptureOverlay::positionPanel(QFrame *panel, const QPoint &anchor, bool preferAbove) {
     panel->adjustSize();
-    const QSize size=panel->size();
     const QRect bounds=rect();
-    const int gap=6;
-    int y=preferAbove ? anchor.y()-size.height()-gap : anchor.y()+gap;
-    if (y<0 || y+size.height()>bounds.height()) {
-        const int alternative=preferAbove ? anchor.y()+gap : anchor.y()-size.height()-gap;
-        if (alternative>=0 && alternative+size.height()<=bounds.height()) y=alternative;
-    }
-    int x=qBound(0,anchor.x()-size.width()/2,qMax(0,bounds.width()-size.width()));
-    y=qBound(0,y,qMax(0,bounds.height()-size.height()));
-    // 工具栏矩形是禁区：面板永远不能压住工具栏上的按钮。
     const QRect toolbarRect=m_toolbar->geometry();
-    if (toolbarRect.intersects(QRect(x,y,size.width(),size.height()))) {
-        const int below=toolbarRect.bottom()+gap;
-        if (below+size.height()<=bounds.height()) y=below;
-        else y=qMax(0,toolbarRect.top()-size.height()-gap);
+    const int gap=6;
+    const int panelWidth=panel->width(), panelHeight=panel->height();
+    // 两个候选位置：优先方向优先，其次反方向，都要求完整落在覆盖层内。
+    const int preferred=preferAbove ? anchor.y()-panelHeight-gap : anchor.y()+gap;
+    const int alternative=preferAbove ? anchor.y()+gap : anchor.y()-panelHeight-gap;
+    int y=-1;
+    for (const int candidate : {preferred,alternative}) {
+        if (candidate<0 || candidate+panelHeight>bounds.height()) continue;
+        y=candidate; break;
     }
+    if (y<0) y=qBound(0,preferred,qMax(0,bounds.height()-panelHeight));
+    const int x=qBound(0,anchor.x()-panelWidth/2,qMax(0,bounds.width()-panelWidth));
     panel->move(x,y);
+    // 工具栏矩形是禁区：面板永远不能压住工具栏上的按钮。
+    if (toolbarRect.intersects(panel->geometry())) {
+        const int below=toolbarRect.bottom()+gap;
+        const int above=toolbarRect.top()-gap-panel->height();
+        if (below+panel->height()<=bounds.height()) panel->move(x,below);
+        else if (above>=0) panel->move(x,above);
+    }
     panel->raise();
 }
 void CaptureOverlay::updateColorSwatch() {

@@ -355,7 +355,12 @@ private slots:
         auto *toolbar=overlay->findChild<QFrame *>("captureToolbar"); QVERIFY(toolbar);
         overlay->findChild<QToolButton *>("widthButton")->click();
         QVERIFY(panel->isVisible());
-        QVERIFY(!panel->geometry().intersects(toolbar->geometry()));
+        QVERIFY2(!panel->geometry().intersects(toolbar->geometry()),
+                 qPrintable(QStringLiteral("面板 %1,%2 %3×%4 工具栏 %5,%6 %7×%8")
+                            .arg(panel->geometry().x()).arg(panel->geometry().y())
+                            .arg(panel->width()).arg(panel->height())
+                            .arg(toolbar->geometry().x()).arg(toolbar->geometry().y())
+                            .arg(toolbar->width()).arg(toolbar->height())));
         // 完成与取消按钮仍然可点，参数面板不能压住它们。
         QVERIFY(overlay->findChild<QToolButton *>("doneButton")->isVisible());
         QVERIFY(overlay->findChild<QToolButton *>("cancelButton")->isVisible());

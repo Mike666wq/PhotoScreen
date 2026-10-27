@@ -6,6 +6,8 @@
 #include <QGuiApplication>
 #include <QLockFile>
 #include <QMetaObject>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QPointer>
 #include <QScreen>
 #include <QStandardPaths>
@@ -16,23 +18,68 @@
 #include <ScreenCaptureKit/ScreenCaptureKit.h>
 #include <ServiceManagement/ServiceManagement.h>
 #include <unistd.h>
+#include <memory>
 
 namespace photo {
 namespace {
 QString nsError(NSError *error, const QString &fallback) {
     return error ? QString::fromNSString(error.localizedDescription) : fallback;
 }
-CGDirectDisplayID displayForScreen(const QRect &geometry) {
+// NSScreen 在 Qt 逻辑坐标中的矩形。
+// macOS 的全局显示坐标原点在主屏左上角、y 轴向下，与 Qt 逻辑坐标一致。
+QRect qtGeometryForNSScreen(NSScreen *screen) {
     NSArray<NSScreen *> *screens=[NSScreen screens];
-    if (screens.count==0) return 0;
-    const CGFloat primaryHeight=screens[0].frame.size.height;
-    for (NSScreen *screen in screens) {
-        const NSRect frame=screen.frame;
-        const QRect qtRect(qRound(frame.origin.x),qRound(primaryHeight-NSMaxY(frame)),qRound(frame.size.width),qRound(frame.size.height));
-        if (qtRect==geometry) return [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
+    const CGFloat primaryHeight=screens.count? screens[0].frame.size.height:0;
+    const NSRect frame=screen.frame;
+    return QRect(qRound(frame.origin.x),qRound(primaryHeight-NSMaxY(frame)),qRound(frame.size.width),qRound(frame.size.height));
+}
+// 稳定的显示器锚点：NSScreenNumber 就是 CGDirectDisplayID，与 SCDisplay.displayID 同源。
+CGDirectDisplayID displayIdForNSScreen(NSScreen *screen) {
+    NSNumber *number=screen.deviceDescription[@"NSScreenNumber"];
+    return number? (CGDirectDisplayID)number.unsignedIntValue: 0;
+}
+// B7：矩形精确相等太脆弱（缩放取整会让边界差 1px），改成容错匹配。
+// 中心点距离与宽高差都在 2px 以内即视为同一块屏。
+bool nearSameGeometry(const QRect &a, const QRect &b) {
+    if (a.isEmpty() || b.isEmpty()) return false;
+    const int dx=a.center().x()-b.center().x(), dy=a.center().y()-b.center().y();
+    if (qAbs(dx)>2 || qAbs(dy)>2) return false;
+    return qAbs(a.width()-b.width())<=2 && qAbs(a.height()-b.height())<=2;
+}
+CGDirectDisplayID displayIdForScreen(QScreen *screen) {
+    const QRect geometry=screen->geometry();
+    NSArray<NSScreen *> *screens=[NSScreen screens];
+    // 先精确匹配，再容错匹配。
+    for (NSScreen *native in screens) if (qtGeometryForNSScreen(native)==geometry) {
+        const CGDirectDisplayID id=displayIdForNSScreen(native);
+        if (id) return id;
+    }
+    for (NSScreen *native in screens) if (nearSameGeometry(qtGeometryForNSScreen(native),geometry)) {
+        const CGDirectDisplayID id=displayIdForNSScreen(native);
+        if (id) return id;
     }
     return 0;
 }
+// 虚拟桌面上的每块屏：Qt 逻辑矩形 + ScreenCaptureKit 的显示器对象。
+struct DisplayJob {
+    QRect geometry;
+    CGDirectDisplayID displayId=0;
+    SCDisplay *display=nil;
+};
+// 多屏同时捕获时的收集器：各屏的回调可能乱序返回，需要加锁按序号归位。
+struct CaptureCollector {
+    QMutex mutex;
+    QVector<QImage> images;
+    int remaining=0;
+    QString error;
+};
+// 捕获回调可能晚于最外层 block 返回才触发，那时 content 若已释放，
+// SCDisplay 就会悬空。用一个持有强引用的包装对象把生命周期绑到回调上。
+// ARC 下 C++ 类的 ObjC 指针成员默认就是 __strong，构造时 retain、析构时 release。
+struct ContentHolder {
+    SCShareableContent *content=nil;
+    explicit ContentHolder(SCShareableContent *value) : content(value) {}
+};
 QVector<QRect> windowRects() {
     QVector<QRect> result;
     CFArrayRef windows=CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,kCGNullWindowID);
@@ -99,8 +146,8 @@ private:
 }
 
 void captureScreen(QScreen *screen, QObject *context, CaptureCallback callback) {
-    const QRect geometry=screen->geometry(); const CGDirectDisplayID displayId=displayForScreen(geometry);
-    if (!displayId) { callback({{},QStringLiteral("无法识别当前显示器。"),false}); return; }
+    // 捕获的是整个虚拟桌面，screen 只用于参数兼容，截图范围不再受它限制。
+    Q_UNUSED(screen);
     if (!CGPreflightScreenCaptureAccess() && !CGRequestScreenCaptureAccess()) {
         callback({{},QStringLiteral("请在系统设置的“隐私与安全性 → 屏幕与系统录音”中允许 PhotoScreen 截屏，然后重试。"),true}); return;
     }
@@ -111,23 +158,59 @@ void captureScreen(QScreen *screen, QObject *context, CaptureCallback callback) 
             if (target) QMetaObject::invokeMethod(target,[target,callback,message] { if (target) callback({{},message,false}); },Qt::QueuedConnection);
             return;
         }
-        SCDisplay *chosen=nil;
-        for (SCDisplay *display in content.displays) if (display.displayID==displayId) { chosen=display; break; }
-        if (!chosen) {
-            if (target) QMetaObject::invokeMethod(target,[target,callback] { if (target) callback({{},QStringLiteral("显示器已断开，请重试。"),false}); },Qt::QueuedConnection);
+        // 虚拟桌面上的每块屏都参与捕获，选区因此可以横跨多屏。
+        QVector<DisplayJob> jobs;
+        for (QScreen *qscreen : QGuiApplication::screens()) {
+            const CGDirectDisplayID displayId=displayIdForScreen(qscreen);
+            if (!displayId) continue;
+            SCDisplay *match=nil;
+            for (SCDisplay *display in content.displays) if (display.displayID==displayId) { match=display; break; }
+            if (!match) continue;
+            jobs.append(DisplayJob{qscreen->geometry(),displayId,match});
+        }
+        if (jobs.isEmpty()) {
+            if (target) QMetaObject::invokeMethod(target,[target,callback] { if (target) callback({{},QStringLiteral("无法识别当前显示器，请重试。"),false}); },Qt::QueuedConnection);
             return;
         }
-        SCContentFilter *filter=[[SCContentFilter alloc] initWithDisplay:chosen excludingWindows:@[]];
-        SCStreamConfiguration *config=[[SCStreamConfiguration alloc] init];
-        config.width=CGDisplayPixelsWide(displayId); config.height=CGDisplayPixelsHigh(displayId); config.showsCursor=NO;
-        [SCScreenshotManager captureImageWithFilter:filter configuration:config completionHandler:^(CGImageRef image, NSError *captureError) {
-            const QImage pixels=imageFromCGImage(image);
-            const QString message=nsError(captureError,QStringLiteral("无法截取屏幕。"));
-            if (target) QMetaObject::invokeMethod(target,[target,callback,geometry,windows,pixels,message] {
-                if (!target) return; CaptureResult result; result.frame={pixels,geometry,windows};
-                if (pixels.isNull()) result.error=message; callback(result);
-            },Qt::QueuedConnection);
-        }];
+        // 各屏同时发起捕获，尽量压缩屏与屏之间的时间差。
+        auto collector=std::make_shared<CaptureCollector>();
+        auto holder=std::make_shared<ContentHolder>(content);
+        collector->images.resize(jobs.size());
+        collector->remaining=int(jobs.size());
+        for (int index=0;index<jobs.size();++index) {
+            const DisplayJob job=jobs.at(index);
+            SCContentFilter *filter=[[SCContentFilter alloc] initWithDisplay:job.display excludingWindows:@[]];
+            SCStreamConfiguration *config=[[SCStreamConfiguration alloc] init];
+            config.width=CGDisplayPixelsWide(job.displayId); config.height=CGDisplayPixelsHigh(job.displayId); config.showsCursor=NO;
+            [SCScreenshotManager captureImageWithFilter:filter configuration:config completionHandler:^(CGImageRef image, NSError *captureError) {
+                const QImage pixels=imageFromCGImage(image);
+                const QString message=nsError(captureError,QStringLiteral("无法截取屏幕。"));
+                bool finished=false;
+                {
+                    QMutexLocker lock(&collector->mutex);
+                    if (pixels.isNull()) { if (collector->error.isEmpty()) collector->error=message; }
+                    else collector->images[index]=pixels;
+                    finished=(--collector->remaining==0);
+                }
+                // holder 持有 content 的强引用：回调触发时 SCDisplay 仍然有效。
+                if (!finished || !target || !holder->content) return;
+                QVector<ScreenImage> screens;
+                for (int i=0;i<jobs.size();++i) {
+                    if (collector->images.at(i).isNull()) continue;
+                    screens.append(ScreenImage{jobs.at(i).geometry,collector->images.at(i)});
+                }
+                const QString failure=collector->error;
+                QMetaObject::invokeMethod(target,[target,callback,screens,windows,failure] {
+                    if (!target) return;
+                    CaptureResult result;
+                    result.frame.screens=screens;
+                    result.frame.virtualGeometry=virtualGeometry(screens);
+                    result.frame.windowRects=windows;
+                    if (screens.isEmpty()) result.error=failure.isEmpty()?QStringLiteral("无法截取屏幕。"):failure;
+                    callback(result);
+                },Qt::QueuedConnection);
+            }];
+        }
     }];
 }
 bool writeClipboard(const QImage &image, QString *error) {

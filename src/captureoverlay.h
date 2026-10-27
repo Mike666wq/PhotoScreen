@@ -27,8 +27,7 @@ public:
     // 底图重新裁剪次数，仅供测试观察渲染缓存是否生效。
     int cropCount() const { return m_cropCount; }
 signals:
-    void finished();
-protected:
+    void finished();protected:
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
     void mouseMoveEvent(QMouseEvent *) override;
@@ -38,6 +37,16 @@ protected:
     bool eventFilter(QObject *, QEvent *) override;
 private:
     enum class Drag { None, NewSelection, MoveSelection, ResizeSelection, Draw, MoveObject, ResizeObject, ArrowStart, ArrowEnd };
+    // 单块屏幕的渲染缓存：底图只在选区变化时重新裁剪，标注图层每帧重绘但复用缓冲区。
+    // 跨屏选区时每块参与的屏幕各有一份，比例各自独立。
+    struct ScreenCache {
+        QRectF logicalRect;     // 该屏上与选区相交的部分（覆盖层局部逻辑坐标）
+        QPoint origin;          // 该屏在覆盖层局部坐标中的原点
+        QRect crop;             // 选区在该屏像素坐标中的矩形
+        qreal scaleX = 1.0, scaleY = 1.0;
+        QImage base;            // 底图裁剪
+        QImage annotations;     // 标注图层
+    };
     void buildToolbar();
     void ensureRenderCache();
     void buildStylePanel();
@@ -69,6 +78,10 @@ private:
     void clearSelection();
     void updateDrag(const QPointF &point);
     QPointF boundedPoint(const QPointF &p) const;
+    // 覆盖层局部逻辑坐标 → 虚拟桌面逻辑坐标。
+    QPointF toVirtual(const QPointF &local) const { return local + m_frame.virtualGeometry.topLeft(); }
+    // 标注在虚拟桌面逻辑坐标下的副本，导出图片时要用。
+    QVector<Annotation> virtualAnnotations() const;
     QRectF windowAt(const QPointF &p) const;
     int objectAt(const QPointF &p) const;
     int selectionHandleAt(const QPointF &p) const;
@@ -95,10 +108,8 @@ private:
     int m_lineWidth = 3;
     int m_fontSize = 18;
     int m_fontWeight = 400;
-    QImage m_baseCache;         // 选区底图缓存，只在选区变化时重新裁剪
-    QImage m_annoCache;         // 标注图层缓存，可复用，不每帧重新分配
-    QRectF m_cacheSelection;
-    QRect m_cacheRect;
+    QRectF m_cacheSelection;    // 已缓存底图对应的选区，变化时才重新裁剪
+    QVector<ScreenCache> m_caches;  // 跨屏时每块参与的屏幕一份缓存
     int m_cropCount = 0;        // 底图重新裁剪的次数，仅供测试观察
     QFrame *m_toolbar = nullptr;
     QFrame *m_stylePanel = nullptr;

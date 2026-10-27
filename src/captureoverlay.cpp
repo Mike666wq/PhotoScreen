@@ -184,7 +184,10 @@ CaptureOverlay::CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWrit
     setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
-    setGeometry(m_frame.screenGeometry);
+    // 覆盖整个虚拟桌面，选区因此可以横跨多块屏幕。
+    if (m_frame.virtualGeometry.isEmpty()) m_frame.virtualGeometry=virtualGeometry(m_frame.screens);
+    if (m_frame.virtualGeometry.isEmpty() && screen) m_frame.virtualGeometry=screen->geometry();
+    setGeometry(m_frame.virtualGeometry);
     setCursor(Qt::CrossCursor);
     QSettings settings;
     m_color = colorFromSettings(settings.value("annotation/color"), QColor("#ff3b3b"));
@@ -569,9 +572,11 @@ void CaptureOverlay::commitStyleEdit() {
 void CaptureOverlay::setTool(Tool tool) { m_tool=tool; m_selected=-1; setCursor(tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor); update(); }
 QPointF CaptureOverlay::boundedPoint(const QPointF &p) const { return {qBound(0.0,p.x(),double(width())), qBound(0.0,p.y(),double(height()))}; }
 QRectF CaptureOverlay::windowAt(const QPointF &p) const {
-    const QPoint global = m_frame.screenGeometry.topLeft() + p.toPoint();
+    // 窗口矩形是虚拟桌面逻辑坐标，比较前先换算到覆盖层局部坐标。
+    const QPoint origin=m_frame.virtualGeometry.topLeft();
     for (const QRect &window : m_frame.windowRects) {
-        if (window.contains(global)) return window.intersected(m_frame.screenGeometry).translated(-m_frame.screenGeometry.topLeft());
+        const QRect local=window.translated(-origin);
+        if (local.contains(p.toPoint())) return QRectF(local);
     }
     return QRectF(QPointF(0,0),size());
 }
@@ -605,28 +610,56 @@ QVector<Annotation> CaptureOverlay::previewItems() const {
     return items;
 }
 void CaptureOverlay::ensureRenderCache() {
-    const QRect crop=pixelRect(m_selection,size(),m_frame.image.size());
-    if (crop.isEmpty()) { m_baseCache=QImage(); m_annoCache=QImage(); return; }
-    if (m_cacheSelection!=m_selection || m_cacheRect!=crop) {
-        m_cacheSelection=m_selection; m_cacheRect=crop;
-        // 底图只在选区变化时重新裁剪：拖动标注时不再每帧分配并复制整块选区。
-        m_baseCache=cropPixels(m_frame.image,size(),m_selection);
-        ++m_cropCount;
-        m_annoCache=QImage(m_baseCache.size(),QImage::Format_ARGB32_Premultiplied);
+    // 选区没变时只重绘标注图层，底图不重新裁剪（B6）。
+    if (m_cacheSelection!=m_selection) {
+        m_cacheSelection=m_selection;
+        m_caches.clear();
+        const QPoint origin=m_frame.virtualGeometry.topLeft();
+        for (const auto &screen : m_frame.screens) {
+            if (screen.isEmpty()) continue;
+            const QRect screenLocal=screen.geometry.translated(-origin);
+            const QRectF selected=m_selection.intersected(screenLocal);
+            if (selected.isEmpty()) continue;
+            ScreenCache cache;
+            cache.logicalRect=selected;
+            cache.origin=screenLocal.topLeft();
+            cache.scaleX=screen.scaleX(); cache.scaleY=screen.scaleY();
+            cache.crop=pixelRect(selected.translated(-screenLocal.topLeft()),screen.geometry.size(),screen.image.size());
+            if (cache.crop.isEmpty()) continue;
+            cache.base=screen.image.copy(cache.crop);
+            cache.annotations=QImage(cache.base.size(),QImage::Format_ARGB32_Premultiplied);
+            m_caches.append(cache);
+            ++m_cropCount;
+        }
     }
-    if (m_annoCache.isNull()) m_annoCache=QImage(m_baseCache.size(),QImage::Format_ARGB32_Premultiplied);
-    m_annoCache.fill(Qt::transparent);
-    const qreal scaleX=m_frame.image.width()/qMax<qreal>(1,size().width());
-    const qreal scaleY=m_frame.image.height()/qMax<qreal>(1,size().height());
-    renderAnnotationLayer(m_annoCache,m_baseCache,crop,scaleX,scaleY,previewItems());
+    const QVector<Annotation> items=previewItems();
+    for (auto &cache : m_caches) {
+        if (cache.annotations.isNull()) cache.annotations=QImage(cache.base.size(),QImage::Format_ARGB32_Premultiplied);
+        cache.annotations.fill(Qt::transparent);
+        renderAnnotationLayer(cache.annotations,cache.base,cache.crop,cache.origin,cache.scaleX,cache.scaleY,items);
+    }
+}
+QVector<Annotation> CaptureOverlay::virtualAnnotations() const {
+    QVector<Annotation> items=m_document.items();
+    const QPointF delta=m_frame.virtualGeometry.topLeft();
+    if (!delta.isNull()) for (auto &item : items) item.translate(delta);
+    return items;
 }
 void CaptureOverlay::paintEvent(QPaintEvent *) {
     QPainter p(this); p.setRenderHint(QPainter::SmoothPixmapTransform, false);
-    p.drawImage(rect(),m_frame.image);
+    const QPoint origin=m_frame.virtualGeometry.topLeft();
+    // 各屏内容按各自的逻辑位置铺开。
+    for (const auto &screen : m_frame.screens) {
+        if (screen.isEmpty()) continue;
+        p.drawImage(screen.geometry.translated(-origin),screen.image);
+    }
     p.fillRect(rect(),QColor(0,0,0,110));
     if (!m_selection.isEmpty()) {
         ensureRenderCache();
-        if (!m_baseCache.isNull()) { p.drawImage(m_selection,m_baseCache); p.drawImage(m_selection,m_annoCache); }
+        for (const auto &cache : m_caches) {
+            p.drawImage(cache.logicalRect,cache.base);
+            p.drawImage(cache.logicalRect,cache.annotations);
+        }
         p.setPen(QPen(QColor("#1687ef"),2)); p.setBrush(Qt::NoBrush); p.drawRect(m_selection);
         p.setBrush(Qt::white);
         for (const auto &point : handles(m_selection)) p.drawRect(handleRect(point));
@@ -638,24 +671,35 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
             if (a.tool==Tool::Arrow) { p.drawRect(handleRect(a.rect.topLeft())); p.drawRect(handleRect(a.rect.bottomRight())); }
             else p.drawRect(handleRect(box.bottomRight()));
         }
-        const QRect pixels=pixelRect(m_selection,size(),m_frame.image.size());
-        p.setPen(Qt::white); p.setBrush(QColor(0,0,0,180));
-        const QString label=QStringLiteral("%1 × %2 px").arg(pixels.width()).arg(pixels.height());
+        // 尺寸标签：单屏显示物理像素，跨屏显示逻辑尺寸。
+        QString label;
+        if (m_caches.size()<=1) {
+            const QRect pixels=m_caches.isEmpty()?QRect():m_caches.first().crop;
+            label=QStringLiteral("%1 × %2 px").arg(pixels.width()).arg(pixels.height());
+        } else {
+            label=QStringLiteral("%1 × %2 逻辑像素（跨 %3 屏）")
+                    .arg(qRound(m_selection.width())).arg(qRound(m_selection.height())).arg(m_caches.size());
+        }
         QRectF l(m_selection.left(),qMax(0.0,m_selection.top()-24),p.fontMetrics().horizontalAdvance(label)+12,22);
         p.drawRoundedRect(l,3,3); p.drawText(l,Qt::AlignCenter,label);
     } else if (!m_hoverWindow.isEmpty()) {
         p.setPen(QPen(QColor("#1687ef"),2)); p.setBrush(Qt::NoBrush); p.drawRect(m_hoverWindow);
     }
     if (m_selection.isEmpty() || m_drag==Drag::NewSelection) {
-        const qreal sx=double(m_frame.image.width())/width(), sy=double(m_frame.image.height())/height();
-        const int px=qBound(0,int(m_pointer.x()*sx),m_frame.image.width()-1), py=qBound(0,int(m_pointer.y()*sy),m_frame.image.height()-1);
-        const QColor c=m_frame.image.pixelColor(px,py);
-        const QImage sample=magnifierSample(m_frame.image,QPoint(px,py));
-        const int x=qBound(0,int(m_pointer.x())+18,qMax(0,width()-150)), y=qBound(0,int(m_pointer.y())+18,qMax(0,height()-148));
-        const QRect box(x,y,146,144); p.fillRect(box,QColor(20,20,20,230));
-        p.drawImage(QRect(x+19,y+4,108,108),sample);
-        p.setPen(Qt::red); p.drawLine(x+73,y+49,x+73,y+67); p.drawLine(x+64,y+58,x+82,y+58);
-        p.setPen(Qt::white); p.drawText(QRect(x+4,y+115,138,24),Qt::AlignCenter,QStringLiteral("%1, %2  %3").arg(px).arg(py).arg(c.name().toUpper()));
+        // 放大镜按指针所在的那块屏取样：跨屏时不能拿另一块屏的像素。
+        const ScreenImage *screen=screenAt(m_frame.screens,toVirtual(m_pointer));
+        if (screen) {
+            const QPointF local=toVirtual(m_pointer)-screen->geometry.topLeft();
+            const int px=qBound(0,int(local.x()*screen->scaleX()),screen->image.width()-1);
+            const int py=qBound(0,int(local.y()*screen->scaleY()),screen->image.height()-1);
+            const QColor c=screen->image.pixelColor(px,py);
+            const QImage sample=magnifierSample(screen->image,QPoint(px,py));
+            const int x=qBound(0,int(m_pointer.x())+18,qMax(0,width()-150)), y=qBound(0,int(m_pointer.y())+18,qMax(0,height()-148));
+            const QRect box(x,y,146,144); p.fillRect(box,QColor(20,20,20,230));
+            p.drawImage(QRect(x+19,y+4,108,108),sample);
+            p.setPen(Qt::red); p.drawLine(x+73,y+49,x+73,y+67); p.drawLine(x+64,y+58,x+82,y+58);
+            p.setPen(Qt::white); p.drawText(QRect(x+4,y+115,138,24),Qt::AlignCenter,QStringLiteral("%1, %2  %3").arg(px).arg(py).arg(c.name().toUpper()));
+        }
     }
 }
 void CaptureOverlay::clearSelection() {
@@ -861,7 +905,9 @@ void CaptureOverlay::finishCapture() {
     commitText();
     commitStyleEdit();
     if (m_selection.isEmpty()) return;
-    const QImage image=renderSelection(m_frame.image,size(),m_selection,m_document.items()); QString error;
+    // 导出走跨屏渲染：选区与标注都换算成虚拟桌面逻辑坐标。
+    const QImage image=renderSelection(m_frame.screens,m_selection.translated(m_frame.virtualGeometry.topLeft()),virtualAnnotations());
+    QString error;
     if (image.isNull() || !m_clipboardWriter(image,&error)) { showError(error.isEmpty()?QStringLiteral("无法复制图像，请重试。") : error); return; }
     emit finished(); close();
 }

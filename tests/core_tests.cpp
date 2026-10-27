@@ -271,6 +271,22 @@ private slots:
         QVERIFY(out.pixelColor(398,100).red()>200);
         QCOMPARE(out.pixelColor(200,100),QColor(Qt::white));
     }
+    void crossScreenRenderMatchesSingleScreenOnOffsetScreen() {
+        // 选区落在一块「偏移 800 且 2x」的屏上时，跨屏接口必须与单屏接口逐像素一致。
+        // 标注坐标是虚拟桌面逻辑坐标，换算到该屏像素时原点与比例都要参与，否则整块错位。
+        QImage image(1600,1200,QImage::Format_ARGB32); image.fill(Qt::white);
+        Annotation a; a.tool=Tool::Rectangle; a.rect=QRectF(100,100,100,100); a.color=Qt::red; a.width=2;
+        const auto legacy=renderSelection(image,QSizeF(800,600),QRectF(100,100,100,100),{a});
+        Annotation b=a; b.translate(QPointF(800,0));
+        ScreenImage retina; retina.geometry=QRect(800,0,800,600); retina.image=image;
+        const auto modern=renderSelection(QVector<ScreenImage>{retina},QRectF(900,100,100,100),{b});
+        QCOMPARE(modern.size(),legacy.size());
+        for (int y=0;y<legacy.height();++y) for (int x=0;x<legacy.width();++x)
+            if (modern.pixelColor(x,y)!=legacy.pixelColor(x,y)) {
+                QVERIFY2(false,qPrintable(QStringLiteral("首个不同的像素 (%1,%2) 期望 %3 实际 %4")
+                            .arg(x).arg(y).arg(legacy.pixelColor(x,y).name()).arg(modern.pixelColor(x,y).name())));
+            }
+    }
 };
 QTEST_MAIN(CoreTests)
 #include "core_tests.moc"

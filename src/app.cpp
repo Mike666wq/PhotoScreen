@@ -82,8 +82,14 @@ void App::beginCapture() {
         captureScreen(selected,this,[this,selected,generation](CaptureResult result) {
             if (generation!=m_captureGeneration) return;
             m_capturing=false;
-            if (!selected || result.frame.image.isNull()) { reportCaptureError(result); return; }
-            if (selected->geometry()!=result.frame.screenGeometry) return;
+            if (!selected || result.frame.screens.isEmpty()) { reportCaptureError(result); return; }
+            // 校验捕获结果与当前屏幕布局是否一致：屏幕数量与虚拟桌面范围都要对得上，
+            // 否则说明捕获期间显示器插拔或缩放发生了变化，直接放弃本次截图。
+            if (result.frame.screens.size()!=QGuiApplication::screens().size()) return;
+            QRect current;
+            for (QScreen *screen : QGuiApplication::screens())
+                current=current.isNull()?screen->geometry():current.united(screen->geometry());
+            if (result.frame.virtualGeometry!=current) return;
             auto *overlay=new CaptureOverlay(std::move(result.frame),selected);
             m_overlay=overlay;
             connect(overlay,&CaptureOverlay::finished,this,[this,overlay] { if (m_overlay.data()==overlay) m_overlay=nullptr; });

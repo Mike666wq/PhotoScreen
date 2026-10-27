@@ -62,7 +62,9 @@ QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &select
                        const QVector<Annotation> &annotations);
 // 标注图层：把标注画到 out 上（out 可复用，避免每帧重新分配）。
 // base 是裁剪后的底图，马赛克从 base 取样，因此底图与标注可以分层缓存。
-// crop 是选区在源图中的像素矩形，scaleX/scaleY 是源图像素与逻辑单位的比例。
-void renderAnnotationLayer(QImage &out, const QImage &base, const QRect &crop, qreal scaleX, qreal scaleY,
-                           const QVector<Annotation> &annotations);
+// crop 是选区在该屏源图中的像素矩形，scaleX/scaleY 是该屏像素与逻辑单位的比例。
+// origin 是该屏的逻辑原点：标注坐标必须与 origin 处在同一坐标空间，
+// 换算到该屏像素时原点与比例都要参与，否则原点不为 0 或比例不为 1 的屏会整块错位。
+void renderAnnotationLayer(QImage &out, const QImage &base, const QRect &crop, const QPoint &origin,
+                           qreal scaleX, qreal scaleY, const QVector<Annotation> &annotations);
 }

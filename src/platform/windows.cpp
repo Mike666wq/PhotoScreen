@@ -61,7 +61,7 @@ bool matchScreen(const QVector<ScreenTarget> &targets, const QString &deviceName
     return false;
 }
 // 捕获单块 DXGI 输出。adapter 与 output 由调用方持有。
-bool captureOutput(IDXGIAdapter1 *adapter, IDXGIOutput *output, const DXGI_OUTPUT_DESC &desc, QImage &result) {
+bool captureOutput(IDXGIAdapter1 *adapter, const ComPtr<IDXGIOutput> &output, const DXGI_OUTPUT_DESC &desc, QImage &result) {
     ComPtr<ID3D11Device> device; ComPtr<ID3D11DeviceContext> deviceContext; D3D_FEATURE_LEVEL level;
     HRESULT hr=D3D11CreateDevice(adapter,D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device,&level,&deviceContext);
     if (FAILED(hr)) return false;
@@ -122,7 +122,7 @@ CaptureResult captureAllFrames(const QVector<ScreenTarget> &targets) {
                                  desc.DesktopCoordinates.bottom-desc.DesktopCoordinates.top);
             QRect logical;
             QImage image;
-            if (desc.AttachedToDesktop && matchScreen(targets,deviceName,physical,logical) && captureOutput(adapter.Get(),output.Get(),desc,image))
+            if (desc.AttachedToDesktop && matchScreen(targets,deviceName,physical,logical) && captureOutput(adapter.Get(),output,desc,image))
                 result.frame.screens.append(ScreenImage{logical,image});
             output.Reset();
         }

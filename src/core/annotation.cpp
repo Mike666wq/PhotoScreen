@@ -11,6 +11,17 @@
 #include <algorithm>
 
 namespace photo {
+namespace {
+// 马赛克：把区域缩小成色块再放大回去，块大小随输出比例变化。
+void drawMosaic(QImage &out, const QRect &area, qreal blockScale) {
+    if (area.isEmpty()) return;
+    const QImage piece = out.copy(area);
+    const int block = qMax(6, qRound(12 * blockScale));
+    const QImage small = piece.scaled(qMax(1, area.width()/block), qMax(1, area.height()/block), Qt::IgnoreAspectRatio, Qt::FastTransformation);
+    QPainter p(&out); p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    p.drawImage(area, small.scaled(area.size(), Qt::IgnoreAspectRatio, Qt::FastTransformation));
+}
+}
 // 笔迹点的精确极值范围，不含 epsilon，避免包围盒与缩放归一化之间产生微小偏移。
 static QRectF exactPointsBox(const QVector<QPointF> &points) {
     if (points.isEmpty()) return {};
@@ -224,15 +235,81 @@ QImage renderSelection(const QImage &source, const QSizeF &logicalSize, const QR
     for (const auto &a : annotations) {
         if (a.tool == Tool::Mosaic) {
             const QRect area = pixelRect(a.rect, logicalSize, source.size()).intersected(crop).translated(-crop.topLeft());
-            if (area.isEmpty()) continue;
-            const QImage piece = out.copy(area);
-            const int block = qMax(6, qRound(12 * qMin(sx, sy)));
-            const QImage small = piece.scaled(qMax(1, area.width()/block), qMax(1, area.height()/block), Qt::IgnoreAspectRatio, Qt::FastTransformation);
-            QPainter p(&out); p.setRenderHint(QPainter::SmoothPixmapTransform, false);
-            p.drawImage(area, small.scaled(area.size(), Qt::IgnoreAspectRatio, Qt::FastTransformation));
+            drawMosaic(out, area, qMin(sx, sy));
         } else {
             QPainter p(&out);
             p.translate(-crop.x(), -crop.y()); p.scale(sx, sy);
+            drawAnnotation(p, a);
+        }
+    }
+    return out;
+}
+QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &selection,
+                       const QVector<Annotation> &annotations) {
+    const QRectF sel = selection.normalized();
+    if (sel.isEmpty()) return {};
+    QVector<const ScreenImage*> hits;
+    for (const auto &screen : screens) if (!screen.isEmpty() && screen.geometry.intersects(sel)) hits.append(&screen);
+    if (hits.isEmpty()) return {};
+
+    // 输出比例取相交屏幕中的最大值，保证任何一屏都不被降采样。
+    qreal sx = 0, sy = 0;
+    for (const auto *s : hits) { sx = qMax(sx, s->scaleX()); sy = qMax(sy, s->scaleY()); }
+    if (sx <= 0 || sy <= 0) return {};
+
+    // 选区在输出比例下的像素范围，取整规则与单屏实现一致。
+    const int left = qFloor(sel.left()*sx), top = qFloor(sel.top()*sy);
+    const int right = qCeil(sel.right()*sx), bottom = qCeil(sel.bottom()*sy);
+    const QSize outSize(right-left, bottom-top);
+    if (outSize.isEmpty()) return {};
+
+    if (hits.size() == 1) {
+        // 只落在一块屏上：直接复制像素，与单屏实现逐像素一致。
+        const ScreenImage *s = hits.first();
+        // 选区是虚拟桌面绝对坐标，先平移到该屏的局部坐标。
+        const QRectF local = sel.translated(-s->geometry.topLeft());
+        const QRect crop = pixelRect(local, s->geometry.size(), s->image.size());
+        if (crop.isEmpty()) return {};
+        QImage out = s->image.copy(crop).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        const qreal csx = s->image.width() / s->geometry.width();
+        const qreal csy = s->image.height() / s->geometry.height();
+        for (const auto &a : annotations) {
+            if (a.tool == Tool::Mosaic) {
+                const QRect area = pixelRect(a.rect.translated(-s->geometry.topLeft()), s->geometry.size(), s->image.size())
+                                       .intersected(crop).translated(-crop.topLeft());
+                drawMosaic(out, area, qMin(csx, csy));
+            } else {
+                QPainter p(&out);
+                p.translate(-s->geometry.x()-crop.x(), -s->geometry.y()-crop.y()); p.scale(csx, csy);
+                drawAnnotation(p, a);
+            }
+        }
+        return out;
+    }
+
+    // 跨屏：先把每块屏合成到输出图，再叠加标注。
+    QImage out(outSize, QImage::Format_ARGB32_Premultiplied);
+    out.fill(Qt::black);   // 屏幕之间的空隙用黑色填充，输出保持不透明
+    for (const auto *s : hits) {
+        // 该屏在输出像素中的起点取整，避免拼接处出现半像素错位。
+        const int dx = qRound(s->geometry.left()*sx) - left;
+        const int dy = qRound(s->geometry.top()*sy) - top;
+        QPainter p(&out);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+        p.translate(dx, dy);
+        p.scale(sx / s->scaleX(), sy / s->scaleY());
+        p.drawImage(QPointF(0, 0), s->image);
+    }
+    for (const auto &a : annotations) {
+        if (a.tool == Tool::Mosaic) {
+            const QRectF area = a.rect.normalized().intersected(sel);
+            const QRect pixels(qFloor(area.left()*sx)-left, qFloor(area.top()*sy)-top,
+                               qCeil(area.right()*sx)-qFloor(area.left()*sx),
+                               qCeil(area.bottom()*sy)-qFloor(area.top()*sy));
+            drawMosaic(out, pixels.intersected(out.rect()), qMin(sx, sy));
+        } else {
+            QPainter p(&out);
+            p.translate(-left, -top); p.scale(sx, sy);
             drawAnnotation(p, a);
         }
     }

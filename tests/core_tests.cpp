@@ -181,6 +181,96 @@ private slots:
         const qreal tailAfter=after.right()-pen.points.last().x();
         QVERIFY(qAbs(tailBefore-tailAfter)<0.02);
     }
+    void virtualDesktopIsUnionOfScreens() {
+        QVector<ScreenImage> screens;
+        ScreenImage left; left.geometry=QRect(0,0,800,600); left.image=QImage(1600,1200,QImage::Format_ARGB32);
+        ScreenImage right; right.geometry=QRect(800,0,800,600); right.image=QImage(800,600,QImage::Format_ARGB32);
+        screens<<left<<right;
+        QCOMPARE(virtualGeometry(screens),QRect(0,0,1600,600));
+        // 缩放比例按屏计算，不能全局统一。
+        QVERIFY(qAbs(left.scaleX()-2.0)<0.001);
+        QVERIFY(qAbs(right.scaleX()-1.0)<0.001);
+        // 命中点落在第二块屏上。
+        const ScreenImage *hit=screenAt(screens,QPointF(900,300));
+        QVERIFY(hit!=nullptr); QCOMPARE(hit->geometry,QRect(800,0,800,600));
+        QVERIFY(screenAt(screens,QPointF(400,300))!=nullptr);
+    }
+    void affineMapsRoundTrip() {
+        // 原生像素 → 逻辑坐标
+        const QRect native(0,0,1920,1080), logical(-1536,0,1536,864);
+        const AffineMap map=logicalMapFromNative(native,logical);
+        QVERIFY(qAbs(map.map(QPointF(0,0)).x()+1536)<0.001);
+        QVERIFY(qAbs(map.map(QPointF(0,0)).y())<0.001);
+        QVERIFY(qAbs(map.map(QPointF(1920,1080)).x())<0.001);
+        QVERIFY(qAbs(map.map(QPointF(1920,1080)).y()-864)<0.001);
+        QVERIFY(qAbs(map.unmap(map.map(QPointF(500,500))).x()-500)<0.001);
+        QVERIFY(qAbs(map.unmap(map.map(QPointF(500,500))).y()-500)<0.001);
+        // 逻辑坐标 → 屏幕像素
+        const AffineMap pixels=pixelMapFromScreen(QRect(800,0,800,600),QSize(1600,1200));
+        QVERIFY(qAbs(pixels.map(QPointF(800,0)).x())<0.001);
+        QVERIFY(qAbs(pixels.map(QPointF(800,0)).y())<0.001);
+        QVERIFY(qAbs(pixels.map(QPointF(1600,600)).x()-1600)<0.001);
+        QVERIFY(qAbs(pixels.map(QPointF(1600,600)).y()-1200)<0.001);
+        QVERIFY(qAbs(pixels.unmap(pixels.map(QPointF(1000,300))).x()-1000)<0.001);
+        QVERIFY(qAbs(pixels.unmap(pixels.map(QPointF(1000,300))).y()-300)<0.001);
+    }
+    void singleScreenRenderMatchesLegacy() {
+        // 选区只落在一块屏上时，新接口必须与旧的单屏实现逐像素一致。
+        QImage image(200,200,QImage::Format_ARGB32); image.fill(Qt::white);
+        Annotation a; a.tool=Tool::Rectangle; a.rect=QRectF(20,20,20,20); a.color=Qt::red; a.width=2;
+        const auto legacy=renderSelection(image,QSizeF(100,100),QRectF(10,10,60,60),{a});
+        ScreenImage screen; screen.geometry=QRect(0,0,100,100); screen.image=image;
+        const auto modern=renderSelection(QVector<ScreenImage>{screen},QRectF(10,10,60,60),{a});
+        QCOMPARE(modern.size(),legacy.size());
+        for (int y=0;y<legacy.height();++y) for (int x=0;x<legacy.width();++x)
+            if (modern.pixelColor(x,y)!=legacy.pixelColor(x,y)) {
+                QVERIFY2(false,qPrintable(QStringLiteral("首个不同的像素 (%1,%2)").arg(x).arg(y)));
+            }
+    }
+    void crossScreenRenderKeepsBothScreens() {
+        // 左屏 2x，右屏 1x；选区横跨两屏，输出比例取 2x，两屏都不被降采样。
+        QVector<ScreenImage> screens;
+        ScreenImage retina; retina.geometry=QRect(0,0,800,600);
+        retina.image=QImage(1600,1200,QImage::Format_ARGB32); retina.image.fill(Qt::red);
+        ScreenImage plain; plain.geometry=QRect(800,0,800,600);
+        plain.image=QImage(800,600,QImage::Format_ARGB32); plain.image.fill(Qt::blue);
+        screens<<retina<<plain;
+        // 选区逻辑范围 x=700..900，跨过两屏边界 x=800。
+        const auto out=renderSelection(screens,QRectF(700,100,200,100),{});
+        QCOMPARE(out.size(),QSize(400,200));
+        // 左半是 2x 屏，右半是 1x 屏被放大到 2x。
+        QCOMPARE(out.pixelColor(10,100),QColor(Qt::red));
+        QCOMPARE(out.pixelColor(390,100),QColor(Qt::blue));
+        // 两屏交界处不能出现空隙。
+        QCOMPARE(out.pixelColor(199,100),QColor(Qt::red));
+        QCOMPARE(out.pixelColor(200,100),QColor(Qt::blue));
+    }
+    void crossScreenRenderUsesLargestScaleOfTouchedScreens() {
+        // 选区只落在 1x 屏上时按 1x 输出，落在 2x 屏上时按 2x 输出。
+        QVector<ScreenImage> screens;
+        ScreenImage retina; retina.geometry=QRect(0,0,800,600);
+        retina.image=QImage(1600,1200,QImage::Format_ARGB32); retina.image.fill(Qt::red);
+        ScreenImage plain; plain.geometry=QRect(800,0,800,600);
+        plain.image=QImage(800,600,QImage::Format_ARGB32); plain.image.fill(Qt::blue);
+        screens<<retina<<plain;
+        QCOMPARE(renderSelection(screens,QRectF(900,100,100,100),{}).size(),QSize(100,100));
+        QCOMPARE(renderSelection(screens,QRectF(100,100,100,100),{}).size(),QSize(200,200));
+    }
+    void crossScreenRenderDrawsAnnotations() {
+        QVector<ScreenImage> screens;
+        ScreenImage retina; retina.geometry=QRect(0,0,800,600);
+        retina.image=QImage(1600,1200,QImage::Format_ARGB32); retina.image.fill(Qt::white);
+        ScreenImage plain; plain.geometry=QRect(800,0,800,600);
+        plain.image=QImage(800,600,QImage::Format_ARGB32); plain.image.fill(Qt::white);
+        screens<<retina<<plain;
+        Annotation a; a.tool=Tool::Rectangle; a.rect=QRectF(700,100,200,100); a.color=Qt::red; a.width=2;
+        const auto out=renderSelection(screens,QRectF(700,100,200,100),{a});
+        QCOMPARE(out.size(),QSize(400,200));
+        // 矩形边框横跨两屏，两侧都要画出来。
+        QVERIFY(out.pixelColor(1,100).red()>200);
+        QVERIFY(out.pixelColor(398,100).red()>200);
+        QCOMPARE(out.pixelColor(200,100),QColor(Qt::white));
+    }
 };
 QTEST_MAIN(CoreTests)
 #include "core_tests.moc"

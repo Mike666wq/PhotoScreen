@@ -5,12 +5,17 @@
 #include <QBuffer>
 #include <QCoreApplication>
 #include <QCursor>
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QGuiApplication>
 #include <QMetaObject>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QPointer>
 #include <QScreen>
 #include <QSettings>
+#include <QStringList>
 #include <QTransform>
 #include <QWidget>
 #include <Windows.h>
@@ -61,26 +66,27 @@ bool matchScreen(const QVector<ScreenTarget> &targets, const QString &deviceName
     return false;
 }
 // 捕获单块 DXGI 输出。adapter 与 output 由调用方持有。
+// 每个失败点都写诊断日志，错误码是远程定位的唯一线索。
 bool captureOutput(IDXGIAdapter1 *adapter, const ComPtr<IDXGIOutput> &output, const DXGI_OUTPUT_DESC &desc, QImage &result) {
     ComPtr<ID3D11Device> device; ComPtr<ID3D11DeviceContext> deviceContext; D3D_FEATURE_LEVEL level;
     HRESULT hr=D3D11CreateDevice(adapter,D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device,&level,&deviceContext);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("创建 D3D11 设备"),hr)); return false; }
     ComPtr<IDXGIOutput1> output1; hr=output.As(&output1);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("获取 IDXGIOutput1"),hr)); return false; }
     ComPtr<IDXGIOutputDuplication> duplication; hr=output1->DuplicateOutput(device.Get(),&duplication);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("DuplicateOutput（复制桌面输出）"),hr)); return false; }
     DXGI_OUTDUPL_FRAME_INFO info{}; ComPtr<IDXGIResource> desktop;
     hr=duplication->AcquireNextFrame(2500,&info,&desktop);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("AcquireNextFrame"),hr)); return false; }
     ComPtr<ID3D11Texture2D> texture; hr=desktop.As(&texture);
-    if (FAILED(hr)) { duplication->ReleaseFrame(); return false; }
+    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("获取桌面纹理"),hr)); duplication->ReleaseFrame(); return false; }
     D3D11_TEXTURE2D_DESC texDesc{}; texture->GetDesc(&texDesc);
     texDesc.Usage=D3D11_USAGE_STAGING; texDesc.BindFlags=0; texDesc.CPUAccessFlags=D3D11_CPU_ACCESS_READ; texDesc.MiscFlags=0;
     ComPtr<ID3D11Texture2D> staging; hr=device->CreateTexture2D(&texDesc,nullptr,&staging);
-    if (FAILED(hr)) { duplication->ReleaseFrame(); return false; }
+    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("创建暂存纹理"),hr)); duplication->ReleaseFrame(); return false; }
     deviceContext->CopyResource(staging.Get(),texture.Get()); D3D11_MAPPED_SUBRESOURCE map{};
     hr=deviceContext->Map(staging.Get(),0,D3D11_MAP_READ,0,&map);
-    if (FAILED(hr)) { duplication->ReleaseFrame(); return false; }
+    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("读取暂存纹理"),hr)); duplication->ReleaseFrame(); return false; }
     QImage image(static_cast<const uchar *>(map.pData),int(texDesc.Width),int(texDesc.Height),int(map.RowPitch),QImage::Format_RGB32);
     result=image.copy();
     for (int y=0;y<result.height();++y) {
@@ -98,22 +104,30 @@ bool captureOutput(IDXGIAdapter1 *adapter, const ComPtr<IDXGIOutput> &output, co
 // 捕获整个虚拟桌面：遍历所有挂载在桌面上的 DXGI 输出。
 // targets 是主线程取好的 Qt 屏幕快照，工作线程里不再碰 GUI 对象。
 CaptureResult captureAllFrames(const QVector<ScreenTarget> &targets) {
+    appendDiagnosticLog(QStringLiteral("captureAllFrames 开始：Qt 屏 %1 块").arg(targets.size()));
     CaptureResult result;
     ComPtr<IDXGIFactory1> factory; HRESULT hr=CreateDXGIFactory1(IID_PPV_ARGS(&factory));
-    if (FAILED(hr)) { result.error=failure(QStringLiteral("无法初始化屏幕捕获"),hr); return result; }
+    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("CreateDXGIFactory1"),hr));
+        result.error=failure(QStringLiteral("无法初始化屏幕捕获"),hr); return result; }
     // 虚拟桌面：物理矩形来自系统，逻辑矩形来自 Qt 的屏幕列表。
     const QRect physicalVirtual(GetSystemMetrics(SM_XVIRTUALSCREEN),GetSystemMetrics(SM_YVIRTUALSCREEN),
                                 GetSystemMetrics(SM_CXVIRTUALSCREEN),GetSystemMetrics(SM_CYVIRTUALSCREEN));
     QRect logicalVirtual;
     for (const ScreenTarget &target : targets)
         logicalVirtual=logicalVirtual.isNull()?target.logical:logicalVirtual.united(target.logical);
+    appendDiagnosticLog(QStringLiteral("虚拟桌面：物理(%1,%2 %3x%4) 逻辑(%5,%6 %7x%8)")
+        .arg(physicalVirtual.left()).arg(physicalVirtual.top()).arg(physicalVirtual.width()).arg(physicalVirtual.height())
+        .arg(logicalVirtual.left()).arg(logicalVirtual.top()).arg(logicalVirtual.width()).arg(logicalVirtual.height()));
     if (!logicalVirtual.isEmpty() && !physicalVirtual.isEmpty()) {
         WindowListContext list{RECT{physicalVirtual.left(),physicalVirtual.top(),physicalVirtual.right()+1,physicalVirtual.bottom()+1},logicalVirtual,{}};
         EnumWindows(collectWindow,reinterpret_cast<LPARAM>(&list));
         result.frame.windowRects=list.result;
+        appendDiagnosticLog(QStringLiteral("窗口枚举完成：%1 个").arg(list.result.size()));
     }
     ComPtr<IDXGIAdapter1> adapter; ComPtr<IDXGIOutput> output;
     for (UINT a=0; factory->EnumAdapters1(a,&adapter)!=DXGI_ERROR_NOT_FOUND; ++a) {
+        DXGI_ADAPTER_DESC1 adapterDesc{}; adapter->GetDesc1(&adapterDesc);
+        const QString adapterName=QString::fromWCharArray(adapterDesc.Description);
         for (UINT o=0; adapter->EnumOutputs(o,&output)!=DXGI_ERROR_NOT_FOUND; ++o) {
             DXGI_OUTPUT_DESC desc{}; output->GetDesc(&desc);
             const QString deviceName=QString::fromWCharArray(desc.DeviceName);
@@ -122,13 +136,26 @@ CaptureResult captureAllFrames(const QVector<ScreenTarget> &targets) {
                                  desc.DesktopCoordinates.bottom-desc.DesktopCoordinates.top);
             QRect logical;
             QImage image;
-            if (desc.AttachedToDesktop && matchScreen(targets,deviceName,physical,logical) && captureOutput(adapter.Get(),output,desc,image))
+            const bool matched=matchScreen(targets,deviceName,physical,logical);
+            appendDiagnosticLog(QStringLiteral("适配器「%1」输出 %2：attached=%3 物理(%4,%5 %6x%7) 匹配=%8")
+                .arg(adapterName,deviceName).arg(desc.AttachedToDesktop)
+                .arg(physical.left()).arg(physical.top()).arg(physical.width()).arg(physical.height())
+                .arg(matched
+                    ? QStringLiteral("是，逻辑(%1,%2 %3x%4)").arg(logical.left()).arg(logical.top()).arg(logical.width()).arg(logical.height())
+                    : QStringLiteral("否")));
+            if (desc.AttachedToDesktop && matched && captureOutput(adapter.Get(),output,desc,image)) {
                 result.frame.screens.append(ScreenImage{logical,image});
+                appendDiagnosticLog(QStringLiteral("输出 %1 捕获成功：%2x%3").arg(deviceName).arg(image.width()).arg(image.height()));
+            }
             output.Reset();
         }
         adapter.Reset();
     }
-    if (result.frame.screens.isEmpty()) { result.error=QStringLiteral("无法识别当前显示器，请重新截图。"); return result; }
+    if (result.frame.screens.isEmpty()) {
+        appendDiagnosticLog(QStringLiteral("captureAllFrames 失败：没有捕获到任何输出"));
+        result.error=QStringLiteral("无法识别当前显示器，请重新截图。"); return result;
+    }
+    appendDiagnosticLog(QStringLiteral("captureAllFrames 完成：%1 块屏幕").arg(result.frame.screens.size()));
     result.frame.virtualGeometry=virtualGeometry(result.frame.screens);
     return result;
 }
@@ -184,15 +211,42 @@ HGLOBAL allocMemory(const void *data, size_t bytes) {
 }
 }
 
+// 诊断日志：追加写入 %LOCALAPPDATA%\PhotoScreen\debug.log。
+// 用于远程定位「触发截图无反应」类问题：捕获链路上每一步的结果都落盘。
+// 日志自身失败一律静默放弃，不允许影响截图主流程。
+void appendDiagnosticLog(const QString &line) {
+    static QMutex mutex; QMutexLocker locker(&mutex);
+    const QString root=qEnvironmentVariable("LOCALAPPDATA");
+    if (root.isEmpty()) return;
+    const QString dir=root+QStringLiteral("\\PhotoScreen");
+    if (!QDir().mkpath(dir)) return;
+    QFile file(dir+QStringLiteral("\\debug.log"));
+    if (!file.open(QIODevice::Append|QIODevice::Text)) return;
+    file.write(QStringLiteral("[%1] %2\n").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz")),line).toUtf8());
+}
+
 void captureScreen(QScreen *screen, QObject *context, CaptureCallback callback) {
     // 捕获的是整个虚拟桌面，screen 只用于参数兼容，截图范围不再受它限制。
     Q_UNUSED(screen);
     // QScreen 属于 GUI 线程：先在主线程取好快照，再交给工作线程。
     const QVector<ScreenTarget> targets=screenTargets();
+    QStringList detail;
+    for (const ScreenTarget &t : targets)
+        detail << QStringLiteral("%1 逻辑(%2,%3 %4x%5) 缩放%6")
+            .arg(t.deviceName).arg(t.logical.left()).arg(t.logical.top()).arg(t.logical.width()).arg(t.logical.height()).arg(t.ratio);
+    appendDiagnosticLog(QStringLiteral("captureScreen：主线程屏快照 [%1]").arg(detail.join(QStringLiteral(" | "))));
     QPointer<QObject> target(context);
     std::thread([target,callback,targets] {
+        const qint64 started=QDateTime::currentMSecsSinceEpoch();
+        appendDiagnosticLog(QStringLiteral("captureScreen：工作线程开始"));
         CaptureResult result=captureAllFrames(targets);
-        if (target) QMetaObject::invokeMethod(target,[target,callback,result] { if (target) callback(result); },Qt::QueuedConnection);
+        appendDiagnosticLog(QStringLiteral("captureScreen：工作线程完成，耗时 %1ms，屏数 %2，错误=%3")
+            .arg(QDateTime::currentMSecsSinceEpoch()-started).arg(result.frame.screens.size()).arg(result.error.isEmpty()?QStringLiteral("无"):result.error));
+        if (target) {
+            QMetaObject::invokeMethod(target,[target,callback,result] { if (target) callback(result); },Qt::QueuedConnection);
+        } else {
+            appendDiagnosticLog(QStringLiteral("captureScreen：目标对象已销毁，丢弃捕获结果"));
+        }
     }).detach();
 }
 bool writeClipboard(const QImage &image, QString *error) {

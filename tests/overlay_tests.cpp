@@ -467,9 +467,9 @@ private slots:
         overlay->applyChosenColor(QColor("#00b050"));
         // 最近使用的颜色以逗号分隔的字符串存放，读回时不再依赖后端保留列表类型。
         const QVariant recentValue=QSettings().value("annotation/recentColors");
-        const QStringList stored=recentValue.typeId().id()==QMetaType::QStringList.id()
-                ? recentValue.toStringList()
-                : recentValue.toString().split(',',Qt::SkipEmptyParts);
+        QStringList stored=recentValue.toString().split(',',Qt::SkipEmptyParts);
+        if (stored.isEmpty()) stored=recentValue.toStringList();
+        for (QString &name : stored) name=name.trimmed();
         QVERIFY(!stored.isEmpty());
         QCOMPARE(stored.first(),QStringLiteral("#00b050"));
         auto *recent=overlay->findChild<QToolButton *>("recent_0"); QVERIFY(recent);

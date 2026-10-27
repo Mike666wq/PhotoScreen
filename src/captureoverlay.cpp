@@ -127,21 +127,28 @@ QVector<QColor> presetColors() {
 // 注册表会把它们降级成普通字符串，读回来时 QVariant 的实际类型与 plist 不一致，
 // 导致同一份代码在两个平台上的表现不同。显式存字符串可保证双平台读写一致。
 QColor colorFromSettings(const QVariant &value, const QColor &fallback) {
-    if (value.typeId().id()==QMetaType::QColor.id()) {
-        const QColor stored=value.value<QColor>();
-        if (stored.isValid()) return stored;
-    }
+    // 新格式：十六进制字符串。
     const QColor parsed=QColor(value.toString().trimmed());
-    return parsed.isValid() ? parsed : fallback;
+    if (parsed.isValid()) return parsed;
+    // 旧格式：直接存的 QColor。
+    const QColor legacy=value.value<QColor>();
+    return legacy.isValid() ? legacy : fallback;
 }
 // 最近使用的颜色列表：兼容旧的 QStringList 格式与新的逗号分隔字符串。
 QStringList colorNamesFromSettings(const QVariant &value) {
-    if (value.typeId().id()==QMetaType::QStringList.id()) return value.toStringList();
     QStringList names;
+    // 新格式：逗号分隔的字符串。
     const QStringList parts=value.toString().split(',',Qt::SkipEmptyParts);
     for (const QString &part : parts) {
         const QString name=part.trimmed();
         if (!name.isEmpty()) names.append(name);
+    }
+    if (!names.isEmpty()) return names;
+    // 旧格式：QStringList。
+    const QStringList legacy=value.toStringList();
+    for (const QString &name : legacy) {
+        const QString trimmed=name.trimmed();
+        if (!trimmed.isEmpty()) names.append(trimmed);
     }
     return names;
 }

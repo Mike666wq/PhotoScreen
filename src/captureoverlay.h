@@ -6,7 +6,8 @@
 
 class QButtonGroup;
 class QFrame;
-class QSpinBox;
+class QLabel;
+class QSlider;
 class QTextEdit;
 class QToolButton;
 class QScreen;
@@ -35,6 +36,7 @@ private:
     void setTool(Tool tool);
     void startText(const QPointF &point, int existing = -1);
     void resizeTextEditor();
+    void resizeTextAnnotation(Annotation &annotation) const;
     void commitText();
     void finishCapture();
     void cancelCapture();
@@ -65,12 +67,19 @@ private:
     QColor m_color = Qt::red;
     int m_lineWidth = 3;
     int m_fontSize = 18;
+    int m_fontWeight = 400;
     QFrame *m_toolbar = nullptr;
     QToolButton *m_colorButton = nullptr;
     QToolButton *m_undoButton = nullptr;
     QToolButton *m_redoButton = nullptr;
-    QSpinBox *m_widthControl = nullptr;
-    QSpinBox *m_fontControl = nullptr;
+    QSlider *m_widthControl = nullptr;
+    QSlider *m_fontControl = nullptr;
+    QSlider *m_fontWeightControl = nullptr;
+    QLabel *m_widthValue = nullptr;
+    QLabel *m_fontValue = nullptr;
+    QLabel *m_fontWeightValue = nullptr;
+    QToolButton *m_widthButton = nullptr;
+    QToolButton *m_fontButton = nullptr;
     QTextEdit *m_textEditor = nullptr;
     QPointF m_textAnchor;
     int m_editingText = -1;

@@ -1,5 +1,6 @@
 #include "core/annotation.h"
 #include "core/geometry.h"
+#include <QPainter>
 #include <QtTest>
 #include <QtMath>
 
@@ -39,6 +40,16 @@ private slots:
         Annotation a; a.tool=Tool::Mosaic; a.rect=QRectF(20,20,40,40);
         const auto out=renderSelection(image,QSizeF(100,100),QRectF(0,0,100,100),{a});
         QVERIFY(out!=image); QCOMPARE(out.pixelColor(0,0),image.pixelColor(0,0));
+    }
+    void textWeightChangesRendering() {
+        Annotation regular; regular.tool=Tool::Text; regular.rect=QRectF(5,5,220,70);
+        regular.text=QStringLiteral("Weight"); regular.fontSize=48; regular.fontWeight=100;
+        Annotation bold=regular; bold.fontWeight=900;
+        QImage light(240,80,QImage::Format_ARGB32_Premultiplied); light.fill(Qt::white);
+        QImage heavy=light;
+        { QPainter painter(&light); drawAnnotation(painter,regular); }
+        { QPainter painter(&heavy); drawAnnotation(painter,bold); }
+        QVERIFY(light!=heavy);
     }
     void undoRedo() {
         AnnotationDocument doc; Annotation a; a.rect=QRectF(10,10,20,20); doc.add(a);

@@ -28,5 +28,26 @@ int main(int argc, char **argv) {
         a.rect=QRectF(center-direction*60,center+direction*60); photo::drawAnnotation(p,a);
     }
     p.end();
-    return image.save(outputDir+QStringLiteral("/arrow-length-thickness-directions.png")) ? 0 : 1;
+    if (!image.save(outputDir+QStringLiteral("/arrow-length-thickness-directions.png"))) return 1;
+
+    QImage textImage(900,420,QImage::Format_RGB32); textImage.fill(Qt::white);
+    QPainter textPainter(&textImage); textPainter.setRenderHint(QPainter::Antialiasing);
+    QFont heading=textPainter.font(); heading.setPixelSize(22); textPainter.setFont(heading);
+    textPainter.setPen(QColor("#333333"));
+    textPainter.drawText(QPointF(30,38),QStringLiteral("Text size and weight (synthetic fixture)"));
+    const int weights[]={100,300,400,600,800,900};
+    const QString names[]={QStringLiteral("Thin 100"),QStringLiteral("Light 300"),QStringLiteral("Regular 400"),
+                           QStringLiteral("DemiBold 600"),QStringLiteral("ExtraBold 800"),QStringLiteral("Black 900")};
+    for (int i=0;i<6;++i) {
+        photo::Annotation a; a.tool=photo::Tool::Text; a.color=QColor("#ff3b3b");
+        a.rect=QRectF(30+(i%2)*440,65+(i/2)*110,390,80);
+        a.text=QStringLiteral("PhotoScreen 截图");
+        a.fontSize=34; a.fontWeight=weights[i];
+        photo::drawAnnotation(textPainter,a);
+        QFont caption=textPainter.font(); caption.setPixelSize(13); caption.setWeight(QFont::Normal);
+        textPainter.setFont(caption); textPainter.setPen(QColor("#555555"));
+        textPainter.drawText(QPointF(a.rect.left(),a.rect.bottom()+18),names[i]);
+    }
+    textPainter.end();
+    return textImage.save(outputDir+QStringLiteral("/text-size-weight.png")) ? 0 : 1;
 }

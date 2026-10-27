@@ -10,6 +10,7 @@
 #include <QKeyEvent>
 #include <QInputMethod>
 #include <QLabel>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -19,15 +20,18 @@
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSettings>
-#include <QSpinBox>
+#include <QSlider>
 #include <QSizePolicy>
 #include <QTextEdit>
 #include <QTextDocument>
 #include <QAbstractTextDocumentLayout>
 #include <QToolButton>
+#include <QVBoxLayout>
+#include <QWidgetAction>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 namespace photo {
 namespace {
@@ -37,6 +41,26 @@ QVector<QPointF> handles(const QRectF &r) {
     return {r.topLeft(), QPointF(r.center().x(),r.top()), r.topRight(),
             QPointF(r.right(),r.center().y()), r.bottomRight(), QPointF(r.center().x(),r.bottom()),
             r.bottomLeft(), QPointF(r.left(),r.center().y())};
+}
+QSlider *addSlider(QVBoxLayout *layout, const QString &title, int minimum, int maximum, int value, QLabel **valueLabel) {
+    auto *heading=new QHBoxLayout;
+    auto *name=new QLabel(title); auto *number=new QLabel(QString::number(value));
+    number->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    heading->addWidget(name); heading->addStretch(); heading->addWidget(number);
+    layout->addLayout(heading);
+    auto *slider=new QSlider(Qt::Horizontal); slider->setRange(minimum,maximum);
+    slider->setValue(value); slider->setAccessibleName(title); slider->setMinimumWidth(170);
+    layout->addWidget(slider); *valueLabel=number;
+    QObject::connect(slider,&QSlider::valueChanged,number,[number](int n) { number->setText(QString::number(n)); });
+    return slider;
+}
+QVBoxLayout *sliderMenu(QToolButton *button) {
+    auto *menu=new QMenu(button);
+    auto *panel=new QWidget(menu);
+    auto *layout=new QVBoxLayout(panel); layout->setContentsMargins(12,10,12,10); layout->setSpacing(5);
+    auto *action=new QWidgetAction(menu); action->setDefaultWidget(panel); menu->addAction(action);
+    button->setMenu(menu); button->setPopupMode(QToolButton::InstantPopup);
+    return layout;
 }
 QIcon toolIcon(Tool tool) {
     QPixmap pixmap(24,24); pixmap.fill(Qt::transparent);
@@ -76,6 +100,7 @@ CaptureOverlay::CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWrit
     m_color = settings.value("annotation/color", QColor("#ff3b3b")).value<QColor>();
     m_lineWidth = settings.value("annotation/width", 3).toInt();
     m_fontSize = settings.value("annotation/fontSize", 18).toInt();
+    m_fontWeight = qBound(100,settings.value("annotation/fontWeight", 400).toInt(),900);
     buildToolbar();
     connect(m_document.undoStack(), &QUndoStack::indexChanged, this, [this] {
         m_selected = -1; m_undoButton->setEnabled(m_document.undoStack()->canUndo());
@@ -122,22 +147,57 @@ void CaptureOverlay::buildToolbar() {
             }
         }
     });
-    m_widthControl = new QSpinBox(toolArea); m_widthControl->setObjectName("widthControl"); m_widthControl->setRange(1,20); m_widthControl->setValue(m_lineWidth);
-    m_widthControl->setToolTip(QStringLiteral("线宽 / 箭头粗细")); m_widthControl->setAccessibleName(QStringLiteral("线宽 / 箭头粗细")); m_widthControl->setFixedWidth(48); toolsLayout->addWidget(m_widthControl);
-    connect(m_widthControl, &QSpinBox::valueChanged, this, [this](int n) {
+    m_widthButton=new QToolButton(toolArea); m_widthButton->setObjectName("widthButton");
+    m_widthButton->setText(QStringLiteral("粗细 %1").arg(m_lineWidth)); m_widthButton->setToolTip(QStringLiteral("线宽 / 箭头粗细"));
+    m_widthButton->setAccessibleName(QStringLiteral("线宽 / 箭头粗细")); toolsLayout->addWidget(m_widthButton);
+    m_widthControl=addSlider(sliderMenu(m_widthButton),QStringLiteral("线宽 / 箭头粗细"),1,20,m_lineWidth,&m_widthValue);
+    m_widthControl->setObjectName("widthControl"); m_widthValue->setObjectName("widthValue");
+    connect(m_widthControl, &QSlider::valueChanged, this, [this](int n) {
         m_lineWidth=n; QSettings().setValue("annotation/width",n);
+        m_widthButton->setText(QStringLiteral("粗细 %1").arg(n));
         if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool!=Tool::Text) {
             const int i=m_selected; auto item=m_document.items()[i]; item.width=n; m_document.replace(i,item); m_selected=i; update();
         }
     });
-    m_fontControl = new QSpinBox(toolArea); m_fontControl->setObjectName("fontControl"); m_fontControl->setRange(10,72); m_fontControl->setValue(m_fontSize);
-    m_fontControl->setToolTip(QStringLiteral("字号")); m_fontControl->setAccessibleName(QStringLiteral("字号")); m_fontControl->setFixedWidth(48); toolsLayout->addWidget(m_fontControl);
-    connect(m_fontControl, &QSpinBox::valueChanged, this, [this](int n) {
+    m_fontButton=new QToolButton(toolArea); m_fontButton->setObjectName("fontButton"); m_fontButton->setText(QStringLiteral("文字"));
+    m_fontButton->setToolTip(QStringLiteral("文字大小和粗细")); m_fontButton->setAccessibleName(QStringLiteral("文字大小和粗细")); toolsLayout->addWidget(m_fontButton);
+    auto *fontLayout=sliderMenu(m_fontButton);
+    m_fontControl=addSlider(fontLayout,QStringLiteral("字号"),10,72,m_fontSize,&m_fontValue);
+    m_fontControl->setObjectName("fontControl"); m_fontValue->setObjectName("fontValue");
+    m_fontWeightControl=addSlider(fontLayout,QStringLiteral("字体粗细"),100,900,m_fontWeight,&m_fontWeightValue);
+    m_fontWeightControl->setObjectName("fontWeightControl"); m_fontWeightValue->setObjectName("fontWeightValue"); m_fontWeightControl->setSingleStep(100);
+    connect(m_fontControl, &QSlider::valueChanged, this, [this](int n) {
         m_fontSize=n; QSettings().setValue("annotation/fontSize",n);
-        if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool==Tool::Text) {
-            const int i=m_selected; auto item=m_document.items()[i]; item.fontSize=n; m_document.replace(i,item); m_selected=i; update();
+        if (m_textEditor) {
+            QFont font=m_textEditor->font(); font.setPixelSize(n); m_textEditor->setFont(font); resizeTextEditor();
+        } else if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool==Tool::Text) {
+            const int i=m_selected; auto item=m_document.items()[i]; item.fontSize=n; resizeTextAnnotation(item); m_document.replace(i,item); m_selected=i; update();
         }
     });
+    connect(m_fontWeightControl, &QSlider::valueChanged, this, [this](int n) {
+        m_fontWeight=n; QSettings().setValue("annotation/fontWeight",n);
+        if (m_textEditor) {
+            QFont font=m_textEditor->font(); font.setWeight(static_cast<QFont::Weight>(n)); m_textEditor->setFont(font); resizeTextEditor();
+        } else if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool==Tool::Text) {
+            const int i=m_selected; auto item=m_document.items()[i]; item.fontWeight=n; resizeTextAnnotation(item); m_document.replace(i,item); m_selected=i; update();
+        }
+    });
+    for (QSlider *slider : {m_widthControl,m_fontControl,m_fontWeightControl}) {
+        auto dragging=std::make_shared<bool>(false);
+        connect(slider,&QSlider::sliderPressed,this,[this,slider,dragging] {
+            if (!m_textEditor && m_selected>=0 && m_selected<m_document.items().size()) {
+                const bool applies=(slider==m_widthControl) != (m_document.items()[m_selected].tool==Tool::Text);
+                if (!applies) return;
+                m_document.undoStack()->beginMacro(QStringLiteral("调整样式")); *dragging=true;
+            }
+        });
+        connect(slider,&QSlider::sliderReleased,this,[this,dragging] {
+            if (*dragging) {
+                const int selected=m_selected; m_document.undoStack()->endMacro(); m_selected=selected;
+                *dragging=false; update();
+            }
+        });
+    }
     toolArea->adjustSize(); scroll->setWidget(toolArea); scroll->setMaximumWidth(toolArea->sizeHint().width()+2);
     m_undoButton = new QToolButton(m_toolbar); m_undoButton->setObjectName("undoButton"); m_undoButton->setText(QStringLiteral("↶")); m_undoButton->setToolTip(QStringLiteral("撤销")); m_undoButton->setEnabled(false); layout->addWidget(m_undoButton);
     m_redoButton = new QToolButton(m_toolbar); m_redoButton->setObjectName("redoButton"); m_redoButton->setText(QStringLiteral("↷")); m_redoButton->setToolTip(QStringLiteral("重做")); m_redoButton->setEnabled(false); layout->addWidget(m_redoButton);
@@ -262,8 +322,15 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
         const int object=objectAt(m_press);
         if (object>=0) {
             m_selected=object; m_startAnnotation=m_document.items()[object]; m_color=m_startAnnotation.color; updateColorSwatch();
-            const QSignalBlocker b1(m_widthControl), b2(m_fontControl);
-            m_widthControl->setValue(qRound(m_startAnnotation.width)); m_fontControl->setValue(m_startAnnotation.fontSize);
+            const QSignalBlocker b1(m_widthControl), b2(m_fontControl), b3(m_fontWeightControl);
+            if (m_startAnnotation.tool==Tool::Text) {
+                m_fontSize=m_startAnnotation.fontSize; m_fontWeight=m_startAnnotation.fontWeight;
+                m_fontControl->setValue(m_fontSize); m_fontWeightControl->setValue(m_fontWeight);
+                m_fontValue->setText(QString::number(m_fontSize)); m_fontWeightValue->setText(QString::number(m_fontWeight));
+            } else {
+                m_lineWidth=qRound(m_startAnnotation.width); m_widthControl->setValue(m_lineWidth);
+                m_widthValue->setText(QString::number(m_lineWidth)); m_widthButton->setText(QStringLiteral("粗细 %1").arg(m_lineWidth));
+            }
             m_drag=Drag::MoveObject; update(); return;
         }
         m_selected=-1; m_startRect=m_selection;
@@ -328,8 +395,15 @@ void CaptureOverlay::startText(const QPointF &point, int existing) {
     m_textEditor->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_textEditor->setGeometry(bounds.toAlignedRect().intersected(rect()));
     QFont font=QApplication::font();
-    if (existing>=0 && !m_document.items()[existing].fontFamily.isEmpty()) font.setFamily(m_document.items()[existing].fontFamily);
-    font.setPixelSize(existing>=0 ? m_document.items()[existing].fontSize : m_fontSize); m_textEditor->setFont(font);
+    if (existing>=0) {
+        const auto &item=m_document.items()[existing];
+        if (!item.fontFamily.isEmpty()) font.setFamily(item.fontFamily);
+        m_fontSize=item.fontSize; m_fontWeight=item.fontWeight;
+        const QSignalBlocker b1(m_fontControl), b2(m_fontWeightControl);
+        m_fontControl->setValue(m_fontSize); m_fontWeightControl->setValue(m_fontWeight);
+        m_fontValue->setText(QString::number(m_fontSize)); m_fontWeightValue->setText(QString::number(m_fontWeight));
+    }
+    font.setPixelSize(m_fontSize); font.setWeight(static_cast<QFont::Weight>(m_fontWeight)); m_textEditor->setFont(font);
     const QColor textColor=existing>=0 ? m_document.items()[existing].color : m_color;
     m_textEditor->setStyleSheet(QStringLiteral("QTextEdit{border:0;background:rgba(255,255,255,210);color:%1;}").arg(textColor.name()));
     if (existing>=0) m_textEditor->setPlainText(m_document.items()[existing].text);
@@ -346,6 +420,16 @@ void CaptureOverlay::resizeTextEditor() {
     QRect bounds=m_textEditor->geometry(); bounds.setY(y); bounds.setHeight(height);
     if (bounds!=m_textEditor->geometry()) m_textEditor->setGeometry(bounds);
 }
+void CaptureOverlay::resizeTextAnnotation(Annotation &annotation) const {
+    QFont font=QApplication::font();
+    if (!annotation.fontFamily.isEmpty()) font.setFamily(annotation.fontFamily);
+    font.setPixelSize(annotation.fontSize); font.setWeight(static_cast<QFont::Weight>(annotation.fontWeight));
+    QTextDocument document; document.setDocumentMargin(0); document.setDefaultFont(font);
+    document.setPlainText(annotation.text); document.setTextWidth(annotation.rect.width());
+    const qreal height=qMin(qMax(24,qCeil(document.documentLayout()->documentSize().height())+2),qMax(1,qFloor(m_selection.height())));
+    annotation.rect.moveTop(qBound(m_selection.top(),annotation.rect.top(),m_selection.bottom()-height));
+    annotation.rect.setHeight(height);
+}
 void CaptureOverlay::commitText() {
     if (!m_textEditor) return;
     if (QGuiApplication::inputMethod()) QGuiApplication::inputMethod()->commit();
@@ -353,8 +437,9 @@ void CaptureOverlay::commitText() {
     const QString text=editor->toPlainText(); const QRectF bounds=editor->geometry(); editor->removeEventFilter(this); editor->deleteLater();
     if (!text.trimmed().isEmpty()) {
         Annotation a; if (m_editingText>=0 && m_editingText<m_document.items().size()) a=m_document.items()[m_editingText];
-        else { a.tool=Tool::Text; a.color=m_color; a.fontSize=m_fontSize; }
+        else { a.tool=Tool::Text; a.color=m_color; }
         a.rect=bounds; a.text=text; a.fontFamily=editor->font().family();
+        a.fontSize=editor->font().pixelSize(); a.fontWeight=int(editor->font().weight());
         if (m_editingText>=0) m_document.replace(m_editingText,a); else m_document.add(a);
     } else if (m_editingText>=0) m_document.remove(m_editingText);
     m_editingText=-1; setFocus(); update();

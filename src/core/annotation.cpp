@@ -111,6 +111,7 @@ void drawAnnotation(QPainter &p, const Annotation &a) {
         QFont font=QApplication::font();
         if (!a.fontFamily.isEmpty()) font.setFamily(a.fontFamily);
         font.setPixelSize(a.fontSize);
+        font.setWeight(static_cast<QFont::Weight>(a.fontWeight));
         QTextDocument document; document.setDocumentMargin(0); document.setDefaultFont(font);
         document.setPlainText(a.text); document.setTextWidth(rect.width());
         QTextCursor cursor(&document); cursor.select(QTextCursor::Document);

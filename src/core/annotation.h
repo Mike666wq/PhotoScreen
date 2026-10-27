@@ -17,6 +17,7 @@ struct Annotation {
     QColor color = Qt::red;
     qreal width = 3;
     int fontSize = 18;
+    int fontWeight = 400;
     QString fontFamily;
     QString text;
     QRectF bounds() const;

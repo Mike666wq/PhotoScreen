@@ -1,10 +1,11 @@
 #include "captureoverlay.h"
 #include <QApplication>
 #include <QInputMethodEvent>
+#include <QLabel>
 #include <QMessageBox>
 #include <QScreen>
 #include <QSignalSpy>
-#include <QSpinBox>
+#include <QSlider>
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
@@ -23,6 +24,30 @@ private:
         QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,start);
         QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,end);
         QCoreApplication::processEvents();
+    }
+    static QImage renderSelectedTextWeight(int finalWeight) {
+        QImage copied;
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[&](const QImage &image,QString *) { copied=image; return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        auto *textTool=overlay->findChild<QToolButton *>("tool_5");
+        auto *selectTool=overlay->findChild<QToolButton *>("tool_0");
+        if (!textTool || !selectTool) return {};
+        textTool->click();
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor");
+        auto *font=overlay->findChild<QSlider *>("fontControl");
+        auto *weight=overlay->findChild<QSlider *>("fontWeightControl");
+        if (!editor || !font || !weight) return {};
+        font->setValue(44); weight->setValue(800);
+        QInputMethodEvent input; input.setCommitString(QStringLiteral("Weight"));
+        QApplication::sendEvent(editor,&input);
+        QTest::keyClick(editor,Qt::Key_Return,Qt::ControlModifier);
+        selectTool->click();
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(60,68));
+        weight->setValue(finalWeight);
+        QTest::keyClick(overlay,Qt::Key_Return);
+        return copied;
     }
 private slots:
     void releasePositionAndCopy() {
@@ -76,15 +101,40 @@ private slots:
         overlay->show(); QCoreApplication::processEvents();
         selectArea(overlay,QPoint(10,10),QPoint(510,400));
         overlay->findChild<QToolButton *>("tool_3")->click();
-        auto *width=overlay->findChild<QSpinBox *>("widthControl"); QVERIFY(width); width->setValue(3);
+        auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width); width->setValue(3);
+        auto *widthValue=overlay->findChild<QLabel *>("widthValue"); QVERIFY(widthValue);
+        QCOMPARE(widthValue->text(),QStringLiteral("3"));
         selectArea(overlay,QPoint(50,100),QPoint(350,100));
         overlay->findChild<QToolButton *>("tool_0")->click();
         QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));
         width->setValue(9);
+        QCOMPARE(widthValue->text(),QStringLiteral("9"));
         QTest::keyClick(overlay,Qt::Key_Return);
         QVERIFY(!copied.isNull());
         const QColor widened=copied.pixelColor(500,190);
         QVERIFY(widened.red()>200 && widened.green()<130 && widened.blue()<130);
+    }
+    void textSlidersUpdateEditorAndExistingText() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_5")->click();
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        auto *font=overlay->findChild<QSlider *>("fontControl"); QVERIFY(font);
+        auto *weight=overlay->findChild<QSlider *>("fontWeightControl"); QVERIFY(weight);
+        auto *fontValue=overlay->findChild<QLabel *>("fontValue"); QVERIFY(fontValue);
+        auto *weightValue=overlay->findChild<QLabel *>("fontWeightValue"); QVERIFY(weightValue);
+        font->setValue(44); weight->setValue(800);
+        QCOMPARE(editor->font().pixelSize(),44);
+        QCOMPARE(int(editor->font().weight()),800);
+        QCOMPARE(fontValue->text(),QStringLiteral("44"));
+        QCOMPARE(weightValue->text(),QStringLiteral("800"));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+
+        const QImage light=renderSelectedTextWeight(100);
+        const QImage heavy=renderSelectedTextWeight(900);
+        QVERIFY(!light.isNull()); QVERIFY(!heavy.isNull()); QVERIFY(light!=heavy);
     }
     void textInputAndFailureRetry() {
         QImage copied; int attempts=0;

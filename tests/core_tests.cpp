@@ -107,6 +107,80 @@ private slots:
         auto bottom=magnifierSample(source,QPoint(19,19));
         QCOMPARE(bottom.pixelColor(8,8),QColor(Qt::blue)); QCOMPARE(bottom.pixelColor(16,16),QColor(Qt::black));
     }
+    void penStrokeIsHittable() {
+        Annotation pen; pen.tool=Tool::Pen; pen.width=6; pen.color=Qt::red;
+        pen.points={QPointF(20,50),QPointF(120,50),QPointF(120,90)};
+        QVERIFY(annotationContains(pen,QPointF(60,50),2));
+        QVERIFY(annotationContains(pen,QPointF(120,70),2));
+        QVERIFY(!annotationContains(pen,QPointF(60,80),2));
+        QVERIFY(!annotationContains(pen,QPointF(200,200),2));
+    }
+    void singlePointPenIsHittable() {
+        Annotation pen; pen.tool=Tool::Pen; pen.width=8;
+        pen.points={QPointF(50,50)};
+        QVERIFY(annotationContains(pen,QPointF(52,52),2));
+        QVERIFY(!annotationContains(pen,QPointF(70,70),2));
+    }
+    void mosaicAreaIsHittable() {
+        Annotation mosaic; mosaic.tool=Tool::Mosaic; mosaic.rect=QRectF(30,30,60,40);
+        QVERIFY(annotationContains(mosaic,QPointF(60,50),2));
+        QVERIFY(annotationContains(mosaic,QPointF(33,33),2));
+        QVERIFY(!annotationContains(mosaic,QPointF(120,120),2));
+    }
+    void rectangleHasSharpCorners() {
+        const QRectF rect(50,50,100,100);
+        QImage sharp(200,200,QImage::Format_ARGB32); sharp.fill(Qt::white);
+        Annotation annotation; annotation.tool=Tool::Rectangle; annotation.rect=rect; annotation.color=Qt::red; annotation.width=8;
+        QPainter painter(&sharp);
+        drawAnnotation(painter,annotation);
+        painter.end();
+        // 同样的矩形用圆角笔刷渲染作为对照。
+        QImage round(200,200,QImage::Format_ARGB32); round.fill(Qt::white);
+        QPainter roundPainter(&round);
+        roundPainter.setPen(QPen(Qt::red,8,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));
+        roundPainter.setBrush(Qt::NoBrush);
+        roundPainter.drawRect(rect);
+        roundPainter.end();
+        // 角外侧方块内，直角版本覆盖的像素必须多于圆角版本。
+        int sharpPixels=0, roundPixels=0;
+        for (int y=44;y<52;++y) for (int x=44;x<52;++x) {
+            const QColor s=sharp.pixelColor(x,y), r=round.pixelColor(x,y);
+            if (s.red()>200 && s.green()<100) ++sharpPixels;
+            if (r.red()>200 && r.green()<100) ++roundPixels;
+        }
+        QVERIFY2(sharpPixels>roundPixels,
+                 qPrintable(QStringLiteral("直角=%1 圆角=%2").arg(sharpPixels).arg(roundPixels)));
+        QVERIFY(sharp.pixelColor(50,50).red()>200);
+    }
+    void penScalingKeepsBounds() {
+        // setBounds(target) 后，bounds() 必须仍等于 target（含线宽外扩语义）。
+        Annotation pen; pen.tool=Tool::Pen; pen.width=6;
+        pen.points={QPointF(20,20),QPointF(80,20),QPointF(80,60)};
+        const QRectF target(100,100,200,120);
+        pen.setBounds(target);
+        const QRectF after=pen.bounds();
+        QVERIFY(qAbs(after.left()-target.left())<0.01);
+        QVERIFY(qAbs(after.top()-target.top())<0.01);
+        QVERIFY(qAbs(after.width()-target.width())<0.02);
+        QVERIFY(qAbs(after.height()-target.height())<0.02);
+    }
+    void penScalingDoesNotDriftByLineWidth() {
+        // 包围盒含线宽外扩；缩放后笔迹本身不应整体平移一个线宽。
+        Annotation pen; pen.tool=Tool::Pen; pen.width=10;
+        pen.points={QPointF(40,40),QPointF(140,40)};
+        const QVector<QPointF> before=pen.points;
+        const QRectF beforeBounds=pen.bounds();
+        pen.setBounds(QRectF(300,200,240,120));
+        const QRectF after=pen.bounds();
+        // 笔迹首点相对包围盒左上角的偏移应保持不变（仍等于一个线宽）。
+        const qreal offsetBefore=before.first().x()-beforeBounds.left();
+        const qreal offsetAfter=pen.points.first().x()-after.left();
+        QVERIFY(qAbs(offsetBefore-offsetAfter)<0.01);
+        // 末点相对包围盒右边界的偏移同样保持不变。
+        const qreal tailBefore=beforeBounds.right()-before.last().x();
+        const qreal tailAfter=after.right()-pen.points.last().x();
+        QVERIFY(qAbs(tailBefore-tailAfter)<0.02);
+    }
 };
 QTEST_MAIN(CoreTests)
 #include "core_tests.moc"

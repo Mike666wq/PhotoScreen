@@ -12,6 +12,7 @@ $redist = Get-ChildItem -Path (Join-Path $env:VCToolsRedistDir 'x64') -Directory
 if (-not $redist) { throw 'Official MSVC x64 CRT redist directory not found' }
 Copy-Item "$($redist.FullName)\*.dll" $stage -Force
 Copy-Item 'THIRD_PARTY_NOTICES.md' $stage
+Copy-Item 'third_party\qt' "$stage\Qt-Licenses" -Recurse -Force
 if (-not (Test-Path "$stage\platforms\qwindows.dll")) { throw 'Qt Windows platform plugin missing' }
 if (-not (Test-Path "$stage\vcruntime140.dll")) { throw 'MSVC runtime missing' }
 $headers = & dumpbin /headers "$stage\PhotoScreen.exe" | Out-String

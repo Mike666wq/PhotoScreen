@@ -70,7 +70,7 @@ protected:
         }
         // 刻度
         if (tickPosition()!=NoTicks) {
-            const int step=interval()>0?interval():qMax(1,(maximum()-minimum())/10);
+            const int step=tickInterval()>0?tickInterval():qMax(1,(maximum()-minimum())/10);
             p.setPen(QPen(QColor("#8a8f96"),1));
             for (int v=minimum(); v<=maximum(); v+=step) {
                 const int x=groove.left()+QStyle::sliderPositionFromValue(minimum(),maximum(),v,travel,groove.width());

@@ -1,6 +1,5 @@
 #include "captureoverlay.h"
 #include <QApplication>
-#include <QCoreEvent>
 #include <QInputMethodEvent>
 #include <QLabel>
 #include <QMessageBox>
@@ -234,18 +233,19 @@ private slots:
         overlay->findChild<QToolButton *>("tool_5")->click();      // 文字
         QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
         auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        const quintptr oldEditor=quintptr(editor);
         QInputMethodEvent input; input.setCommitString(QStringLiteral("彩色文字"));
         QApplication::sendEvent(editor,&input);
         QTest::keyClick(editor,Qt::Key_Return,Qt::ControlModifier);   // 提交
         QCoreApplication::processEvents();
-        const quintptr oldEditor=quintptr(editor);
-        QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
         QCOMPARE(overlay->annotations().size(),1);
         const QColor original=overlay->annotations().first().color;
         // 切回选择工具后双击已有文字，进入编辑态。
         overlay->findChild<QToolButton *>("tool_0")->click();
         QTest::mouseDClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(60,60));
-        auto *editor2=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor2);
+        // 上一个编辑器可能还没被回收，取最新的那个。
+        const auto editors=overlay->findChildren<QTextEdit *>("annotationTextEditor"); QVERIFY(!editors.isEmpty());
+        auto *editor2=editors.last();
         QVERIFY(quintptr(editor2)!=oldEditor);
         // 编辑器预览必须是该标注自身的颜色，而不是工具栏当前色。
         QCOMPARE(editor2->currentCharFormat().foreground().color().name(),original.name());
@@ -270,11 +270,12 @@ private slots:
         QApplication::sendEvent(editor,&input);
         QTest::keyClick(editor,Qt::Key_Return,Qt::ControlModifier);   // 提交
         QCoreApplication::processEvents();
-        QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
         QCOMPARE(overlay->annotations().size(),1);
         overlay->findChild<QToolButton *>("tool_0")->click();
         QTest::mouseDClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(60,60));
-        auto *editor2=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor2);
+        // 上一个编辑器可能还没被回收，取最新的那个。
+        const auto editors=overlay->findChildren<QTextEdit *>("annotationTextEditor"); QVERIFY(!editors.isEmpty());
+        auto *editor2=editors.last();
         // 显式换色：编辑器预览必须立刻更新。
         overlay->applyChosenColor(QColor("#00b050"));
         QCOMPARE(editor2->currentCharFormat().foreground().color().name(),QStringLiteral("#00b050"));

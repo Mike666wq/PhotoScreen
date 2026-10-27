@@ -40,7 +40,7 @@ private:
     // 单块屏幕的渲染缓存：底图只在选区变化时重新裁剪，标注图层每帧重绘但复用缓冲区。
     // 跨屏选区时每块参与的屏幕各有一份，比例各自独立。
     struct ScreenCache {
-        QRect logicalRect;      // 该屏上与选区相交的部分（覆盖层局部逻辑坐标）
+        QRectF logicalRect;     // 该屏上与选区相交的部分（覆盖层局部逻辑坐标）
         QPoint origin;          // 该屏在覆盖层局部坐标中的原点
         QRect crop;             // 选区在该屏像素坐标中的矩形
         qreal scaleX = 1.0, scaleY = 1.0;

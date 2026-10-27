@@ -618,7 +618,7 @@ void CaptureOverlay::ensureRenderCache() {
         for (const auto &screen : m_frame.screens) {
             if (screen.isEmpty()) continue;
             const QRect screenLocal=screen.geometry.translated(-origin);
-            const QRect selected=m_selection.intersected(screenLocal);
+            const QRectF selected=m_selection.intersected(screenLocal);
             if (selected.isEmpty()) continue;
             ScreenCache cache;
             cache.logicalRect=selected;

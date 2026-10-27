@@ -286,6 +286,43 @@ private slots:
         QCOMPARE(overlay->annotations().first().color.name(),QStringLiteral("#00b050"));
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
+    void rightClickReselectKeepsAnnotations() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();      // 箭头
+        selectArea(overlay,QPoint(50,100),QPoint(350,100));        // 画一个箭头
+        QCOMPARE(overlay->annotations().size(),1);
+        const int steps=overlay->undoDepth();
+        // 右键重新框选：选区应清空，但标注与撤销历史必须保留。
+        QTest::mouseClick(overlay,Qt::RightButton,Qt::NoModifier,QPoint(200,200));
+        QCoreApplication::processEvents();
+        QCOMPARE(overlay->annotations().size(),1);
+        QCOMPARE(overlay->undoDepth(),steps);
+        auto *undo=overlay->findChild<QToolButton *>("undoButton"); QVERIFY(undo);
+        QVERIFY(undo->isEnabled());
+        // 撤销仍应能逐个移除那个箭头。
+        undo->click();
+        QCOMPARE(overlay->annotations().size(),0);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void clickOutsideSelectionKeepsAnnotations() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(300,220));
+        overlay->findChild<QToolButton *>("tool_3")->click();
+        selectArea(overlay,QPoint(50,100),QPoint(250,180));
+        QCOMPARE(overlay->annotations().size(),1);
+        overlay->findChild<QToolButton *>("tool_0")->click();      // 选择工具
+        const int steps=overlay->undoDepth();
+        // 在选区外按下并拖动，是重新框选的另一条路径，同样不能丢标注。
+        QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(330,300));
+        QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(400,340));
+        QCoreApplication::processEvents();
+        QCOMPARE(overlay->annotations().size(),1);
+        QCOMPARE(overlay->undoDepth(),steps);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
 private:
     static int undoSteps(CaptureOverlay *overlay) { return overlay->undoDepth(); }
 };

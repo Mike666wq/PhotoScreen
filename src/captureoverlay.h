@@ -49,7 +49,7 @@ private:
     void commitText();
     void finishCapture();
     void cancelCapture();
-    void resetDocument();
+    void clearSelection();
     void updateDrag(const QPointF &point);
     QPointF boundedPoint(const QPointF &p) const;
     QRectF windowAt(const QPointF &p) const;

@@ -332,9 +332,19 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
         p.setPen(Qt::white); p.drawText(QRect(x+4,y+115,138,24),Qt::AlignCenter,QStringLiteral("%1, %2  %3").arg(px).arg(py).arg(c.name().toUpper()));
     }
 }
-void CaptureOverlay::resetDocument() { commitStyleEdit(); m_document.undoStack()->clear(); m_document.setItemsForCommand({}); m_selected=-1; m_hasPreview=false; }
+void CaptureOverlay::clearSelection() {
+    // 只清空选区与工具栏，保留已画的标注和撤销历史。
+    // 样式编辑会话必须先提交，否则会话会残留在文档里。
+    commitStyleEdit();
+    m_selection = {};
+    m_selected = -1;
+    m_hoverWindow = {};
+    m_toolbar->hide();
+    update();
+}
 void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
-    if (event->button()==Qt::RightButton) { if (m_selection.isEmpty()) cancelCapture(); else { commitText(); m_selection={}; resetDocument(); m_toolbar->hide(); update(); } return; }
+    // 右键：清空选区重新框选，但保留已画的标注与撤销历史。
+    if (event->button()==Qt::RightButton) { if (m_selection.isEmpty()) cancelCapture(); else { commitText(); clearSelection(); } return; }
     if (event->button()!=Qt::LeftButton) return;
     commitText(); m_press=boundedPoint(event->position()); m_pointer=m_press;
     if (m_selection.isEmpty()) { m_drag=Drag::NewSelection; m_startRect={}; return; }
@@ -367,7 +377,7 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
         }
         m_selected=-1; m_startRect=m_selection;
         if (m_selection.contains(m_press)) m_drag=Drag::MoveSelection;
-        else { resetDocument(); m_selection={}; m_toolbar->hide(); m_drag=Drag::NewSelection; }
+        else { clearSelection(); m_drag=Drag::NewSelection; }
     } else if (m_selection.contains(m_press)) {
         if (m_tool==Tool::Text) { startText(m_press); return; }
         m_drag=Drag::Draw; m_preview={}; m_preview.tool=m_tool; m_preview.color=m_color; m_preview.width=m_lineWidth;

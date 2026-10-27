@@ -48,7 +48,7 @@ QVector<QPointF> handles(const QRectF &r) {
 // macOS 与 Windows 表现一致。轨道是 4px 圆角矩形，手柄是 14px 圆形。
 class StyledSlider : public QSlider {
 public:
-    explicit StyledSlider(QWidget *parent=nullptr) : QSlider(parent) { setMinimumHeight(26); }
+    explicit StyledSlider(QWidget *parent=nullptr) : QSlider(Qt::Horizontal,parent) { setMinimumHeight(26); }
     // 轨道填充渐变（色相条、明度条用）；设置后不再画“已选部分”填充。
     void setGrooveGradient(const QLinearGradient &gradient) { m_gradient=gradient; m_hasGradient=true; update(); }
 protected:

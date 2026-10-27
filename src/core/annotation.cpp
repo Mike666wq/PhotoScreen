@@ -281,7 +281,10 @@ QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &select
                 drawMosaic(out, out, area, qMin(csx, csy));
             } else {
                 QPainter p(&out);
-                p.translate(-s->geometry.x()-crop.x(), -s->geometry.y()-crop.y()); p.scale(csx, csy);
+                // 标注是虚拟桌面逻辑坐标，先换算成该屏的像素坐标：
+                // (逻辑坐标 - 屏幕原点) * 比例 - 裁剪原点。
+                p.translate(-s->geometry.x()*csx-crop.x(), -s->geometry.y()*csy-crop.y());
+                p.scale(csx, csy);
                 drawAnnotation(p, a);
             }
         }
@@ -317,20 +320,22 @@ QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &select
     return out;
 }
 
-void renderAnnotationLayer(QImage &out, const QImage &base, const QRect &crop, qreal scaleX, qreal scaleY,
-                           const QVector<Annotation> &annotations) {
+void renderAnnotationLayer(QImage &out, const QImage &base, const QRect &crop, const QPoint &origin,
+                           qreal scaleX, qreal scaleY, const QVector<Annotation> &annotations) {
     if (out.isNull() || base.isNull()) return;
     for (const auto &a : annotations) {
         if (a.tool == Tool::Mosaic) {
             // 马赛克区域先换算成源图像素，再裁到选区内，最后平移到底图坐标。
-            const QRectF rect=a.rect.normalized();
+            const QRectF rect=a.rect.normalized().translated(-origin);
             const QRect pixels(qFloor(rect.left()*scaleX), qFloor(rect.top()*scaleY),
                                qCeil(rect.right()*scaleX)-qFloor(rect.left()*scaleX),
                                qCeil(rect.bottom()*scaleY)-qFloor(rect.top()*scaleY));
             drawMosaic(out, base, pixels.intersected(crop).translated(-crop.topLeft()), qMin(scaleX, scaleY));
         } else {
+            // 平移量要在缩放之前算好：逻辑坐标 → 屏内像素 = (逻辑坐标 - 原点) * 比例 - 裁剪原点。
             QPainter p(&out);
-            p.translate(-crop.x(), -crop.y()); p.scale(scaleX, scaleY);
+            p.translate(-origin.x()*scaleX-crop.x(), -origin.y()*scaleY-crop.y());
+            p.scale(scaleX, scaleY);
             drawAnnotation(p, a);
         }
     }

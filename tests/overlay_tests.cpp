@@ -20,9 +20,27 @@ class OverlayTests : public QObject {
     Q_OBJECT
 private:
     static ScreenFrame frame(int width=600, int height=480) {
-        ScreenFrame f; f.screenGeometry=QRect(0,0,width,height);
-        f.image=QImage(width*2,height*2,QImage::Format_RGB32); f.image.fill(Qt::white);
-        f.windowRects={QRect(20,20,200,120)}; return f;
+        // 单屏场景：逻辑 600×480，物理像素 1200×960（模拟 2x 屏）。
+        ScreenFrame f;
+        ScreenImage screen;
+        screen.geometry=QRect(0,0,width,height);
+        screen.image=QImage(width*2,height*2,QImage::Format_RGB32); screen.image.fill(Qt::white);
+        f.screens={screen};
+        f.virtualGeometry=screen.geometry;
+        f.windowRects={QRect(20,20,200,120)};
+        return f;
+    }
+    // 双屏场景：左屏 2x、右屏 1x，虚拟桌面横跨两屏。
+    static ScreenFrame dualFrame() {
+        ScreenFrame f;
+        ScreenImage left;
+        left.geometry=QRect(0,0,600,480); left.image=QImage(1200,960,QImage::Format_RGB32); left.image.fill(Qt::white);
+        ScreenImage right;
+        right.geometry=QRect(600,0,600,480); right.image=QImage(600,480,QImage::Format_RGB32); right.image.fill(Qt::white);
+        f.screens={left,right};
+        f.virtualGeometry=QRect(0,0,1200,480);
+        f.windowRects={QRect(20,20,200,120)};
+        return f;
     }
     static void selectArea(CaptureOverlay *overlay, const QPoint &start, const QPoint &end) {
         QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,start);
@@ -478,6 +496,24 @@ private slots:
         recent->click();
         QCOMPARE(QSettings().value("annotation/color").toString(),QStringLiteral("#00b050"));
         QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void overlayCoversWholeVirtualDesktop() {
+        auto *overlay=new CaptureOverlay(dualFrame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        // 覆盖层必须铺满整个虚拟桌面，选区才能横跨两块屏。
+        QCOMPARE(overlay->geometry(),QRect(0,0,1200,480));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void crossScreenSelectionSpansBothScreens() {
+        QImage copied;
+        auto *overlay=new CaptureOverlay(dualFrame(),QGuiApplication::primaryScreen(),[&](const QImage &image,QString *) { copied=image; return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        // 选区横跨左右两屏：左屏 2x、右屏 1x。
+        selectArea(overlay,QPoint(500,100),QPoint(700,300));
+        QTest::keyClick(overlay,Qt::Key_Return);
+        QVERIFY(!copied.isNull());
+        // 输出比例取两屏中的最大值 2x，选区逻辑尺寸 200×200。
+        QCOMPARE(copied.size(),QSize(400,400));
     }
     void draggingAnnotationDoesNotRecropBase() {
         auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });

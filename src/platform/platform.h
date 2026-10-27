@@ -1,4 +1,5 @@
 #pragma once
+#include "core/screen.h"
 #include <QImage>
 #include <QKeySequence>
 #include <QObject>
@@ -10,9 +11,11 @@
 class QScreen;
 class QWidget;
 namespace photo {
+// 一次捕获的完整结果：整个虚拟桌面，而不是单块屏幕。
+// 所有矩形都是 Qt 逻辑全局坐标（虚拟桌面空间），图像是各屏的物理像素图。
 struct ScreenFrame {
-    QImage image;
-    QRect screenGeometry;
+    QVector<ScreenImage> screens;
+    QRect virtualGeometry;
     QVector<QRect> windowRects;
 };
 struct CaptureResult {

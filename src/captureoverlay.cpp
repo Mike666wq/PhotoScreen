@@ -567,13 +567,29 @@ QVector<Annotation> CaptureOverlay::previewItems() const {
     }
     return items;
 }
+void CaptureOverlay::ensureRenderCache() {
+    const QRect crop=pixelRect(m_selection,size(),m_frame.image.size());
+    if (crop.isEmpty()) { m_baseCache=QImage(); m_annoCache=QImage(); return; }
+    if (m_cacheSelection!=m_selection || m_cacheRect!=crop) {
+        m_cacheSelection=m_selection; m_cacheRect=crop;
+        // 底图只在选区变化时重新裁剪：拖动标注时不再每帧分配并复制整块选区。
+        m_baseCache=cropPixels(m_frame.image,size(),m_selection);
+        ++m_cropCount;
+        m_annoCache=QImage(m_baseCache.size(),QImage::Format_ARGB32_Premultiplied);
+    }
+    if (m_annoCache.isNull()) m_annoCache=QImage(m_baseCache.size(),QImage::Format_ARGB32_Premultiplied);
+    m_annoCache.fill(Qt::transparent);
+    const qreal scaleX=m_frame.image.width()/qMax<qreal>(1,size().width());
+    const qreal scaleY=m_frame.image.height()/qMax<qreal>(1,size().height());
+    renderAnnotationLayer(m_annoCache,m_baseCache,crop,scaleX,scaleY,previewItems());
+}
 void CaptureOverlay::paintEvent(QPaintEvent *) {
     QPainter p(this); p.setRenderHint(QPainter::SmoothPixmapTransform, false);
     p.drawImage(rect(),m_frame.image);
     p.fillRect(rect(),QColor(0,0,0,110));
     if (!m_selection.isEmpty()) {
-        const QImage selected=renderSelection(m_frame.image,size(),m_selection,previewItems());
-        if (!selected.isNull()) p.drawImage(m_selection,selected);
+        ensureRenderCache();
+        if (!m_baseCache.isNull()) { p.drawImage(m_selection,m_baseCache); p.drawImage(m_selection,m_annoCache); }
         p.setPen(QPen(QColor("#1687ef"),2)); p.setBrush(Qt::NoBrush); p.drawRect(m_selection);
         p.setBrush(Qt::white);
         for (const auto &point : handles(m_selection)) p.drawRect(handleRect(point));

@@ -452,6 +452,25 @@ private slots:
         QCOMPARE(QSettings().value("annotation/color").value<QColor>().name(),QStringLiteral("#00b050"));
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
+    void draggingAnnotationDoesNotRecropBase() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();      // 箭头
+        selectArea(overlay,QPoint(50,100),QPoint(350,100));        // 画一个箭头
+        overlay->findChild<QToolButton *>("tool_0")->click();      // 选择工具
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));  // 选中箭头
+        overlay->repaint();
+        const int crops=overlay->cropCount();
+        QVERIFY(crops>0);
+        // 拖动标注时选区不变，底图不应每帧重新裁剪。
+        QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));
+        for (int i=1;i<=10;++i) { QTest::mouseMove(overlay,QPoint(200+i,100)); overlay->repaint(); }
+        QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(210,100));
+        overlay->repaint();
+        QCOMPARE(overlay->cropCount(),crops);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
 private:
     static int undoSteps(CaptureOverlay *overlay) { return overlay->undoDepth(); }
 };

@@ -24,6 +24,8 @@ public:
     const QVector<Annotation> &annotations() const { return m_document.items(); }
     // 应用一次“用户选定颜色”的动作。颜色面板与自动化测试共用同一条路径。
     void applyChosenColor(const QColor &color);
+    // 底图重新裁剪次数，仅供测试观察渲染缓存是否生效。
+    int cropCount() const { return m_cropCount; }
 signals:
     void finished();
 protected:
@@ -37,6 +39,7 @@ protected:
 private:
     enum class Drag { None, NewSelection, MoveSelection, ResizeSelection, Draw, MoveObject, ResizeObject, ArrowStart, ArrowEnd };
     void buildToolbar();
+    void ensureRenderCache();
     void buildStylePanel();
     void buildColorPanel();
     void toggleStylePanel();
@@ -92,6 +95,11 @@ private:
     int m_lineWidth = 3;
     int m_fontSize = 18;
     int m_fontWeight = 400;
+    QImage m_baseCache;         // 选区底图缓存，只在选区变化时重新裁剪
+    QImage m_annoCache;         // 标注图层缓存，可复用，不每帧重新分配
+    QRectF m_cacheSelection;
+    QRect m_cacheRect;
+    int m_cropCount = 0;        // 底图重新裁剪的次数，仅供测试观察
     QFrame *m_toolbar = nullptr;
     QFrame *m_stylePanel = nullptr;
     QFrame *m_colorPanel = nullptr;

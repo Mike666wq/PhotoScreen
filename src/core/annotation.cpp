@@ -13,9 +13,10 @@
 namespace photo {
 namespace {
 // 马赛克：把区域缩小成色块再放大回去，块大小随输出比例变化。
-void drawMosaic(QImage &out, const QRect &area, qreal blockScale) {
+// 取样来自 source（而不是 out），这样标注层可以和底图分层缓存。
+void drawMosaic(QImage &out, const QImage &source, const QRect &area, qreal blockScale) {
     if (area.isEmpty()) return;
-    const QImage piece = out.copy(area);
+    const QImage piece = source.copy(area);
     const int block = qMax(6, qRound(12 * blockScale));
     const QImage small = piece.scaled(qMax(1, area.width()/block), qMax(1, area.height()/block), Qt::IgnoreAspectRatio, Qt::FastTransformation);
     QPainter p(&out); p.setRenderHint(QPainter::SmoothPixmapTransform, false);
@@ -235,7 +236,7 @@ QImage renderSelection(const QImage &source, const QSizeF &logicalSize, const QR
     for (const auto &a : annotations) {
         if (a.tool == Tool::Mosaic) {
             const QRect area = pixelRect(a.rect, logicalSize, source.size()).intersected(crop).translated(-crop.topLeft());
-            drawMosaic(out, area, qMin(sx, sy));
+            drawMosaic(out, out, area, qMin(sx, sy));
         } else {
             QPainter p(&out);
             p.translate(-crop.x(), -crop.y()); p.scale(sx, sy);
@@ -277,7 +278,7 @@ QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &select
             if (a.tool == Tool::Mosaic) {
                 const QRect area = pixelRect(a.rect.translated(-s->geometry.topLeft()), s->geometry.size(), s->image.size())
                                        .intersected(crop).translated(-crop.topLeft());
-                drawMosaic(out, area, qMin(csx, csy));
+                drawMosaic(out, out, area, qMin(csx, csy));
             } else {
                 QPainter p(&out);
                 p.translate(-s->geometry.x()-crop.x(), -s->geometry.y()-crop.y()); p.scale(csx, csy);
@@ -306,7 +307,7 @@ QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &select
             const QRect pixels(qFloor(area.left()*sx)-left, qFloor(area.top()*sy)-top,
                                qCeil(area.right()*sx)-qFloor(area.left()*sx),
                                qCeil(area.bottom()*sy)-qFloor(area.top()*sy));
-            drawMosaic(out, pixels.intersected(out.rect()), qMin(sx, sy));
+            drawMosaic(out, out, pixels.intersected(out.rect()), qMin(sx, sy));
         } else {
             QPainter p(&out);
             p.translate(-left, -top); p.scale(sx, sy);
@@ -314,5 +315,24 @@ QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &select
         }
     }
     return out;
+}
+
+void renderAnnotationLayer(QImage &out, const QImage &base, const QRect &crop, qreal scaleX, qreal scaleY,
+                           const QVector<Annotation> &annotations) {
+    if (out.isNull() || base.isNull()) return;
+    for (const auto &a : annotations) {
+        if (a.tool == Tool::Mosaic) {
+            // 马赛克区域先换算成源图像素，再裁到选区内，最后平移到底图坐标。
+            const QRectF rect=a.rect.normalized();
+            const QRect pixels(qFloor(rect.left()*scaleX), qFloor(rect.top()*scaleY),
+                               qCeil(rect.right()*scaleX)-qFloor(rect.left()*scaleX),
+                               qCeil(rect.bottom()*scaleY)-qFloor(rect.top()*scaleY));
+            drawMosaic(out, base, pixels.intersected(crop).translated(-crop.topLeft()), qMin(scaleX, scaleY));
+        } else {
+            QPainter p(&out);
+            p.translate(-crop.x(), -crop.y()); p.scale(scaleX, scaleY);
+            drawAnnotation(p, a);
+        }
+    }
 }
 }

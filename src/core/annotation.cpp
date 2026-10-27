@@ -249,7 +249,7 @@ QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &select
     const QRectF sel = selection.normalized();
     if (sel.isEmpty()) return {};
     QVector<const ScreenImage*> hits;
-    for (const auto &screen : screens) if (!screen.isEmpty() && screen.geometry.intersects(sel)) hits.append(&screen);
+    for (const auto &screen : screens) if (!screen.isEmpty() && QRectF(screen.geometry).intersects(sel)) hits.append(&screen);
     if (hits.isEmpty()) return {};
 
     // 输出比例取相交屏幕中的最大值，保证任何一屏都不被降采样。

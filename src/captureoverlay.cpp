@@ -304,6 +304,13 @@ void CaptureOverlay::toggleStylePanel() {
     const QPoint anchor=m_toolbar->mapTo(this,QPoint(m_toolbar->width()/2,0));
     positionPanel(m_stylePanel,anchor,true);
 }
+void CaptureOverlay::hidePanels() {
+    if (m_stylePanel) m_stylePanel->hide();
+    if (m_colorPanel) m_colorPanel->hide();
+}
+bool CaptureOverlay::panelVisible() const {
+    return (m_stylePanel && m_stylePanel->isVisible()) || (m_colorPanel && m_colorPanel->isVisible());
+}
 void CaptureOverlay::buildColorPanel() {
     // 自绘取色面板：原生 QColorDialog 在 macOS 会被覆盖层（NSScreenSaverWindowLevel）吞掉。
     m_colorPanel=new QFrame(this);

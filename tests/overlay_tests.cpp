@@ -5,6 +5,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QScreen>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QSlider>
 #include <QStringList>
@@ -394,6 +395,56 @@ private slots:
         QCOMPARE(undo->text(),QStringLiteral("撤销"));
         auto *redo=overlay->findChild<QToolButton *>("redoButton"); QVERIFY(redo);
         QCOMPARE(redo->text(),QStringLiteral("重做"));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void colorPanelAppliesPresetColor() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        auto *panel=overlay->findChild<QFrame *>("colorPanel"); QVERIFY(panel);
+        QVERIFY(!panel->isVisible());
+        auto *colorButton=overlay->findChild<QToolButton *>("colorButton"); QVERIFY(colorButton);
+        colorButton->click();
+        QVERIFY(panel->isVisible());
+        overlay->applyChosenColor(QColor("#123456"));
+        const quintptr before=colorButton->icon().cacheKey();
+        auto *preset=overlay->findChild<QToolButton *>("preset_1"); QVERIFY(preset);   // #ff6b6b
+        preset->click();
+        // 预设色写入设置
+        QCOMPARE(QSettings().value("annotation/color").value<QColor>().name(),QStringLiteral("#ff6b6b"));
+        // 工具栏色块按钮的图标随之更新
+        QVERIFY(colorButton->icon().cacheKey()!=before);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void colorPanelUpdatesSelectedAnnotation() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();      // 箭头
+        selectArea(overlay,QPoint(50,100),QPoint(350,100));
+        overlay->findChild<QToolButton *>("tool_0")->click();      // 选择工具
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));
+        QCOMPARE(overlay->annotations().size(),1);
+        overlay->findChild<QToolButton *>("colorButton")->click();
+        auto *preset=overlay->findChild<QToolButton *>("preset_4"); QVERIFY(preset);   // #ffb340
+        preset->click();
+        // 选中标注的颜色同步更新
+        QCOMPARE(overlay->annotations().first().color.name(),QStringLiteral("#ffb340"));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void recentColorsAreRemembered() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->applyChosenColor(QColor("#00b050"));
+        const QStringList stored=QSettings().value("annotation/recentColors").toStringList();
+        QVERIFY(!stored.isEmpty());
+        QCOMPARE(stored.first(),QStringLiteral("#00b050"));
+        auto *recent=overlay->findChild<QToolButton *>("recent_0"); QVERIFY(recent);
+        QVERIFY(recent->isEnabled());
+        // 点最近使用的第一个色块能取回刚才的颜色。
+        recent->click();
+        QCOMPARE(QSettings().value("annotation/color").value<QColor>().name(),QStringLiteral("#00b050"));
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
 private:

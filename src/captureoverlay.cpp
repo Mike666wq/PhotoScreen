@@ -10,6 +10,7 @@
 #include <QKeyEvent>
 #include <QInputMethod>
 #include <QLabel>
+#include <QLinearGradient>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -99,6 +100,10 @@ StyledSlider *addStyledSlider(QHBoxLayout *row, const QString &title, int minimu
     *valueLabel=number;
     QObject::connect(slider,&QSlider::valueChanged,number,[number](int n) { number->setText(QString::number(n)); });
     return slider;
+}
+// 给自绘滑块设置轨道渐变。成员指针声明为 QSlider*，这里用 dynamic_cast 取回具体类型。
+void setSliderGradient(QSlider *slider, const QLinearGradient &gradient) {
+    if (auto *styled=dynamic_cast<StyledSlider *>(slider)) styled->setGrooveGradient(gradient);
 }
 // 预设色板：8 个色相 × 3 个深浅，按列排布。
 QVector<QColor> presetColors() {
@@ -330,7 +335,7 @@ void CaptureOverlay::buildColorPanel() {
     hue.setColorAt(0.33,QColor("#00ff00")); hue.setColorAt(0.50,QColor("#00ffff"));
     hue.setColorAt(0.67,QColor("#0000ff")); hue.setColorAt(0.83,QColor("#ff00ff"));
     hue.setColorAt(1.00,QColor("#ff0000"));
-    m_hueControl->setGrooveGradient(hue);
+    setSliderGradient(m_hueControl,hue);
     hueRow->addWidget(hueName); hueRow->addWidget(m_hueControl,1);
     layout->addLayout(hueRow);
 
@@ -393,7 +398,7 @@ void CaptureOverlay::updateColorPreview() {
         QLinearGradient gradient; gradient.setCoordinateMode(QGradient::ObjectBoundingMode);
         gradient.setColorAt(0.0,QColor(Qt::white));
         gradient.setColorAt(1.0,QColor::fromHsvF(m_hueControl->value()/360.0,1.0,1.0));
-        m_valueControl->setGrooveGradient(gradient);
+        setSliderGradient(m_valueControl,gradient);
     }
 }
 QVector<QColor> CaptureOverlay::recentColors() const {

@@ -136,7 +136,7 @@ void CaptureOverlay::buildToolbar() {
         button->setObjectName(QStringLiteral("tool_%1").arg(int(entry.second)));
         group->addButton(button); toolsLayout->addWidget(button);
         if (entry.second == Tool::Select) button->setChecked(true);
-        connect(button, &QToolButton::clicked, this, [this, tool=entry.second] { commitText(); setTool(tool); });
+        connect(button, &QToolButton::clicked, this, [this, tool=entry.second] { commitText(); commitStyleEdit(); setTool(tool); });
     }
     m_colorButton = new QToolButton(toolArea); m_colorButton->setToolTip(QStringLiteral("颜色")); m_colorButton->setAccessibleName(QStringLiteral("颜色"));
     m_colorButton->setObjectName("colorButton"); toolsLayout->addWidget(m_colorButton); updateColorSwatch();
@@ -145,6 +145,8 @@ void CaptureOverlay::buildToolbar() {
         if (chosen.isValid()) {
             m_color=chosen; QSettings().setValue("annotation/color", chosen); updateColorSwatch();
             if (m_textEditor) {
+                // 显式改色才更新正在编辑的文字颜色。
+                m_textColor=chosen;
                 m_textEditor->setStyleSheet(QStringLiteral("QTextEdit{border:0;background:rgba(255,255,255,210);color:%1;}").arg(m_color.name()));
                 applyEditorTextStyle();
             } else if (m_selected>=0 && m_selected<m_document.items().size()) {
@@ -160,8 +162,11 @@ void CaptureOverlay::buildToolbar() {
     connect(m_widthControl, &QSlider::valueChanged, this, [this](int n) {
         m_lineWidth=n; QSettings().setValue("annotation/width",n);
         m_widthButton->setText(QStringLiteral("粗细 %1").arg(n));
-        if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool!=Tool::Text) {
-            const int i=m_selected; auto item=m_document.items()[i]; item.width=n; m_document.replace(i,item); m_selected=i; update();
+        if (m_textEditor) {
+            applyEditorTextStyle();
+        } else if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool!=Tool::Text) {
+            const int i=m_selected; auto item=m_document.items()[i]; item.width=n;
+            applyStyleChange(i,item);
         }
     });
     m_fontButton=new QToolButton(toolArea); m_fontButton->setObjectName("fontButton"); m_fontButton->setText(QStringLiteral("文字"));
@@ -175,10 +180,12 @@ void CaptureOverlay::buildToolbar() {
     m_fontWeightControl->setTickPosition(QSlider::TicksBelow); m_fontWeightControl->setTickInterval(100);
     connect(m_fontControl, &QSlider::valueChanged, this, [this](int n) {
         m_fontSize=n; QSettings().setValue("annotation/fontSize",n);
+        m_fontButton->setText(QStringLiteral("文字 %1").arg(n));
         if (m_textEditor) {
             applyEditorTextStyle(); resizeTextEditor();
         } else if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool==Tool::Text) {
-            const int i=m_selected; auto item=m_document.items()[i]; item.fontSize=n; resizeTextAnnotation(item); m_document.replace(i,item); m_selected=i; update();
+            const int i=m_selected; auto item=m_document.items()[i]; item.fontSize=n; resizeTextAnnotation(item);
+            applyStyleChange(i,item);
         }
     });
     connect(m_fontWeightControl, &QSlider::valueChanged, this, [this](int n) {
@@ -188,30 +195,27 @@ void CaptureOverlay::buildToolbar() {
         if (m_textEditor) {
             applyEditorTextStyle(); resizeTextEditor();
         } else if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool==Tool::Text) {
-            const int i=m_selected; auto item=m_document.items()[i]; item.fontWeight=n; resizeTextAnnotation(item); m_document.replace(i,item); m_selected=i; update();
+            const int i=m_selected; auto item=m_document.items()[i]; item.fontWeight=n; resizeTextAnnotation(item);
+            applyStyleChange(i,item);
         }
     });
+    // 滑块调整样式：按下时开启编辑会话，释放时提交一次，连续拖动只产生一步撤销。
+    // 会话由 AnnotationDocument 管理，滑块丢失 grab 或覆盖层关闭时也不会泄漏到撤销栈。
     for (QSlider *slider : {m_widthControl,m_fontControl,m_fontWeightControl}) {
-        auto dragging=std::make_shared<bool>(false);
-        connect(slider,&QSlider::sliderPressed,this,[this,slider,dragging] {
-            if (!m_textEditor && m_selected>=0 && m_selected<m_document.items().size()) {
-                const bool applies=(slider==m_widthControl) != (m_document.items()[m_selected].tool==Tool::Text);
-                if (!applies) return;
-                m_document.undoStack()->beginMacro(QStringLiteral("调整样式")); *dragging=true;
-            }
+        connect(slider,&QSlider::sliderPressed,this,[this,slider] {
+            if (m_textEditor) return;
+            if (m_selected<0 || m_selected>=m_document.items().size()) return;
+            const bool applies=(slider==m_widthControl) != (m_document.items()[m_selected].tool==Tool::Text);
+            if (!applies) return;
+            m_document.beginEdit();
         });
-        connect(slider,&QSlider::sliderReleased,this,[this,dragging] {
-            if (*dragging) {
-                const int selected=m_selected; m_document.undoStack()->endMacro(); m_selected=selected;
-                *dragging=false; update();
-            }
-        });
+        connect(slider,&QSlider::sliderReleased,this,[this] { commitStyleEdit(); });
     }
     toolArea->adjustSize(); scroll->setWidget(toolArea); scroll->setMaximumWidth(toolArea->sizeHint().width()+2);
     m_undoButton = new QToolButton(m_toolbar); m_undoButton->setObjectName("undoButton"); m_undoButton->setText(QStringLiteral("↶")); m_undoButton->setToolTip(QStringLiteral("撤销")); m_undoButton->setEnabled(false); layout->addWidget(m_undoButton);
     m_redoButton = new QToolButton(m_toolbar); m_redoButton->setObjectName("redoButton"); m_redoButton->setText(QStringLiteral("↷")); m_redoButton->setToolTip(QStringLiteral("重做")); m_redoButton->setEnabled(false); layout->addWidget(m_redoButton);
-    connect(m_undoButton, &QToolButton::clicked, this, [this] { commitText(); m_document.undoStack()->undo(); });
-    connect(m_redoButton, &QToolButton::clicked, this, [this] { commitText(); m_document.undoStack()->redo(); });
+    connect(m_undoButton, &QToolButton::clicked, this, [this] { commitText(); commitStyleEdit(); m_document.undoStack()->undo(); });
+    connect(m_redoButton, &QToolButton::clicked, this, [this] { commitText(); commitStyleEdit(); m_document.undoStack()->redo(); });
     auto *cancel = new QToolButton(m_toolbar); cancel->setObjectName("cancelButton"); cancel->setText(QStringLiteral("×")); cancel->setToolTip(QStringLiteral("取消")); cancel->setAccessibleName(QStringLiteral("取消")); layout->addWidget(cancel);
     auto *done = new QToolButton(m_toolbar); done->setObjectName("doneButton"); done->setText(QStringLiteral("✓")); done->setToolTip(QStringLiteral("完成")); done->setAccessibleName(QStringLiteral("完成")); layout->addWidget(done);
     connect(cancel, &QToolButton::clicked, this, &CaptureOverlay::cancelCapture);
@@ -232,6 +236,23 @@ void CaptureOverlay::positionToolbar() {
     if (y + m_toolbar->height() > height()) y = qRound(m_selection.top()) - m_toolbar->height() - 8;
     y = qBound(0, y, qMax(0,height()-m_toolbar->height()));
     m_toolbar->move(x,y); m_toolbar->show(); m_toolbar->raise();
+}
+void CaptureOverlay::applyStyleChange(int index, const Annotation &item) {
+    // 拖动中（会话已开启）就地修改，释放时统一提交为一步撤销；
+    // 键盘或滚轮调整没有会话，立即提交为一步撤销。
+    const bool editing = m_document.editing();
+    if (!editing) m_document.beginEdit();
+    m_document.setItemInPlace(index, item);
+    m_selected = index;
+    if (!editing) commitStyleEdit();
+    update();
+}
+void CaptureOverlay::commitStyleEdit() {
+    if (!m_document.editing()) return;
+    const int selected = m_selected;
+    m_document.endEdit();
+    m_selected = selected;
+    update();
 }
 void CaptureOverlay::setTool(Tool tool) { m_tool=tool; m_selected=-1; setCursor(tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor); update(); }
 QPointF CaptureOverlay::boundedPoint(const QPointF &p) const { return {qBound(0.0,p.x(),double(width())), qBound(0.0,p.y(),double(height()))}; }
@@ -309,7 +330,7 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
         p.setPen(Qt::white); p.drawText(QRect(x+4,y+115,138,24),Qt::AlignCenter,QStringLiteral("%1, %2  %3").arg(px).arg(py).arg(c.name().toUpper()));
     }
 }
-void CaptureOverlay::resetDocument() { m_document.undoStack()->clear(); m_document.setItemsForCommand({}); m_selected=-1; m_hasPreview=false; }
+void CaptureOverlay::resetDocument() { commitStyleEdit(); m_document.undoStack()->clear(); m_document.setItemsForCommand({}); m_selected=-1; m_hasPreview=false; }
 void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
     if (event->button()==Qt::RightButton) { if (m_selection.isEmpty()) cancelCapture(); else { commitText(); m_selection={}; resetDocument(); m_toolbar->hide(); update(); } return; }
     if (event->button()!=Qt::LeftButton) return;
@@ -413,7 +434,9 @@ void CaptureOverlay::startText(const QPointF &point, int existing) {
         m_fontValue->setText(QString::number(m_fontSize)); m_fontWeightValue->setText(QString::number(m_fontWeight));
     }
     font.setPixelSize(m_fontSize); font.setWeight(static_cast<QFont::Weight>(m_fontWeight)); m_textEditor->setFont(font);
+    // 编辑已有文字时沿用该标注自身的颜色，避免被工具栏当前颜色污染。
     const QColor textColor=existing>=0 ? m_document.items()[existing].color : m_color;
+    m_textColor = textColor;
     m_textEditor->setStyleSheet(QStringLiteral("QTextEdit{border:0;background:rgba(255,255,255,210);color:%1;}").arg(textColor.name()));
     if (existing>=0) m_textEditor->setPlainText(m_document.items()[existing].text);
     applyEditorTextStyle();
@@ -429,7 +452,8 @@ void CaptureOverlay::applyEditorTextStyle() {
     m_textEditor->setFont(font);
     QTextCharFormat format;
     format.setFont(font);
-    format.setForeground(m_color);
+    // 字号与字重调整不得改变文字颜色；颜色只在颜色面板被显式选中时改变。
+    format.setForeground(m_textColor);
     QTextCursor documentCursor(m_textEditor->document());
     documentCursor.select(QTextCursor::Document);
     if (documentCursor.hasSelection()) documentCursor.mergeCharFormat(format);
@@ -456,14 +480,18 @@ void CaptureOverlay::resizeTextAnnotation(Annotation &annotation) const {
 }
 void CaptureOverlay::commitText() {
     if (!m_textEditor) return;
+    // 文字编辑会打断进行中的样式调整，先提交会话保证不丢失。
+    commitStyleEdit();
     if (QGuiApplication::inputMethod()) QGuiApplication::inputMethod()->commit();
     QTextEdit *editor=m_textEditor; m_textEditor=nullptr;
     const QString text=editor->toPlainText(); const QRectF bounds=editor->geometry(); editor->removeEventFilter(this); editor->deleteLater();
     if (!text.trimmed().isEmpty()) {
         Annotation a; if (m_editingText>=0 && m_editingText<m_document.items().size()) a=m_document.items()[m_editingText];
-        else { a.tool=Tool::Text; a.color=m_color; }
+        else { a.tool=Tool::Text; a.color=m_textColor; }
         a.rect=bounds; a.text=text; a.fontFamily=editor->font().family();
         a.fontSize=editor->font().pixelSize(); a.fontWeight=int(editor->font().weight());
+        // 提交的颜色与编辑器预览保持一致。
+        a.color=m_textColor;
         if (m_editingText>=0) m_document.replace(m_editingText,a); else m_document.add(a);
     } else if (m_editingText>=0) m_document.remove(m_editingText);
     m_editingText=-1; setFocus(); update();
@@ -478,8 +506,8 @@ bool CaptureOverlay::eventFilter(QObject *obj, QEvent *event) {
 }
 void CaptureOverlay::keyPressEvent(QKeyEvent *event) {
     if (event->key()==Qt::Key_Escape) { cancelCapture(); return; }
-    if (event->matches(QKeySequence::Undo)) { m_document.undoStack()->undo(); return; }
-    if (event->matches(QKeySequence::Redo)) { m_document.undoStack()->redo(); return; }
+    if (event->matches(QKeySequence::Undo)) { commitStyleEdit(); m_document.undoStack()->undo(); return; }
+    if (event->matches(QKeySequence::Redo)) { commitStyleEdit(); m_document.undoStack()->redo(); return; }
     if (event->key()==Qt::Key_Delete || event->key()==Qt::Key_Backspace) { if (m_selected>=0) m_document.remove(m_selected); return; }
     if (event->key()==Qt::Key_Return || event->key()==Qt::Key_Enter) { finishCapture(); return; }
     QWidget::keyPressEvent(event);
@@ -487,10 +515,11 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *event) {
 void CaptureOverlay::showError(const QString &message) { QMessageBox::warning(this,QStringLiteral("复制失败"),message); activateWindow(); setFocus(); }
 void CaptureOverlay::finishCapture() {
     commitText();
+    commitStyleEdit();
     if (m_selection.isEmpty()) return;
     const QImage image=renderSelection(m_frame.image,size(),m_selection,m_document.items()); QString error;
     if (image.isNull() || !m_clipboardWriter(image,&error)) { showError(error.isEmpty()?QStringLiteral("无法复制图像，请重试。") : error); return; }
     emit finished(); close();
 }
-void CaptureOverlay::cancelCapture() { emit finished(); close(); }
+void CaptureOverlay::cancelCapture() { commitStyleEdit(); emit finished(); close(); }
 }

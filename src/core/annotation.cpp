@@ -21,6 +21,16 @@ static QRectF exactPointsBox(const QVector<QPointF> &points) {
     }
     return QRectF(QPointF(minX,minY), QPointF(maxX,maxY));
 }
+static bool sameAnnotation(const Annotation &a, const Annotation &b) {
+    return a.tool==b.tool && a.rect==b.rect && a.points==b.points && a.color==b.color
+        && qFuzzyCompare(a.width+1,b.width+1) && a.fontSize==b.fontSize && a.fontWeight==b.fontWeight
+        && a.fontFamily==b.fontFamily && a.text==b.text;
+}
+static bool sameItems(const QVector<Annotation> &a, const QVector<Annotation> &b) {
+    if (a.size()!=b.size()) return false;
+    for (int i=0;i<a.size();++i) if (!sameAnnotation(a[i],b[i])) return false;
+    return true;
+}
 QRectF Annotation::bounds() const {
     if (tool == Tool::Arrow) return arrowPath(*this).boundingRect();
     if (tool == Tool::Pen && !points.isEmpty()) {
@@ -118,22 +128,42 @@ class Change final : public QUndoCommand {
 public:
     Change(AnnotationDocument *doc, QVector<Annotation> before, QVector<Annotation> after)
         : m_doc(doc), m_before(std::move(before)), m_after(std::move(after)) {}
-    void undo() override { m_doc->setItemsForCommand(m_before); }
-    void redo() override { m_doc->setItemsForCommand(m_after); }
+    void undo() override { m_doc->endEdit(); m_doc->setItemsForCommand(m_before); }
+    void redo() override { m_doc->endEdit(); m_doc->setItemsForCommand(m_after); }
 private:
     AnnotationDocument *m_doc;
     QVector<Annotation> m_before, m_after;
 };
 void AnnotationDocument::add(const Annotation &item) {
+    endEdit();
     auto after = m_items; after.append(item); m_undo.push(new Change(this, m_items, after));
 }
 void AnnotationDocument::replace(int index, const Annotation &item) {
     if (index < 0 || index >= m_items.size()) return;
+    endEdit();
     auto after = m_items; after[index] = item; m_undo.push(new Change(this, m_items, after));
 }
 void AnnotationDocument::remove(int index) {
     if (index < 0 || index >= m_items.size()) return;
+    endEdit();
     auto after = m_items; after.removeAt(index); m_undo.push(new Change(this, m_items, after));
+}
+void AnnotationDocument::beginEdit() {
+    if (m_editing) return;
+    m_editing = true;
+    m_editBase = m_items;
+}
+void AnnotationDocument::endEdit() {
+    if (!m_editing) return;
+    m_editing = false;
+    const QVector<Annotation> base = m_editBase;
+    m_editBase.clear();
+    if (sameItems(base, m_items)) return;
+    m_undo.push(new Change(this, base, m_items));
+}
+void AnnotationDocument::setItemInPlace(int index, const Annotation &item) {
+    if (index < 0 || index >= m_items.size()) return;
+    m_items[index] = item;
 }
 void configureTextDocument(QTextDocument &document, const Annotation &a) {
     QFont font=QApplication::font();

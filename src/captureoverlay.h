@@ -18,6 +18,10 @@ class CaptureOverlay final : public QWidget {
 public:
     using ClipboardWriter = std::function<bool(const QImage &, QString *)>;
     CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWriter writer = {});
+    // 仅供测试观察撤销栈与标注状态。
+    int undoDepth() const { return m_document.undoDepth(); }
+    bool styleEditActive() const { return m_document.editing(); }
+    const QVector<Annotation> &annotations() const { return m_document.items(); }
 signals:
     void finished();
 protected:
@@ -34,6 +38,8 @@ private:
     void updateColorSwatch();
     void positionToolbar();
     void setTool(Tool tool);
+    void applyStyleChange(int index, const Annotation &item);
+    void commitStyleEdit();
     void startText(const QPointF &point, int existing = -1);
     void applyEditorTextStyle();
     void resizeTextEditor();
@@ -66,6 +72,7 @@ private:
     bool m_hasPreview = false;
     Tool m_tool = Tool::Select;
     QColor m_color = Qt::red;
+    QColor m_textColor = Qt::red;   // 正在编辑的文字颜色，与工具栏当前色解耦
     int m_lineWidth = 3;
     int m_fontSize = 18;
     int m_fontWeight = 400;

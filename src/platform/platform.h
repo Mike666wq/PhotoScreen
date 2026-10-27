@@ -31,6 +31,10 @@ bool setStartupEnabled(bool enabled, QString *error);
 bool acquireSingleInstance();
 void installEnvironmentMonitor(QObject *context, std::function<void()> onSleep);
 void configureOverlay(QWidget *widget);
+// 诊断日志：追加一行到应用数据目录下的 debug.log
+// （Windows：%LOCALAPPDATA%\PhotoScreen\debug.log；macOS：Application Support 下同名文件）。
+// 线程安全；写入失败时静默放弃，绝不影响截图主流程。
+void appendDiagnosticLog(const QString &line);
 
 class HotkeyService {
 public:

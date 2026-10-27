@@ -2,7 +2,9 @@
 #include "macimage.h"
 #include <QBuffer>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QGuiApplication>
 #include <QLockFile>
 #include <QMetaObject>
@@ -240,6 +242,17 @@ bool acquireSingleInstance() {
     static std::unique_ptr<QLockFile> lock;
     const QString path=QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath(QStringLiteral("photoscreen-%1.lock").arg(qEnvironmentVariable("USER")));
     lock=std::make_unique<QLockFile>(path); lock->setStaleLockTime(0); return lock->tryLock();
+}
+// 诊断日志：追加写入 Application Support/PhotoScreen/PhotoScreen/debug.log。
+// 与 Windows 端同一套接口，链路排查时两端日志口径一致。
+void appendDiagnosticLog(const QString &line) {
+    static QMutex mutex; QMutexLocker locker(&mutex);
+    const QString dir=QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (dir.isEmpty()) return;
+    if (!QDir().mkpath(dir)) return;
+    QFile file(dir+QStringLiteral("/debug.log"));
+    if (!file.open(QIODevice::Append|QIODevice::Text)) return;
+    file.write(QStringLiteral("[%1] %2\n").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz")),line).toUtf8());
 }
 void installEnvironmentMonitor(QObject *context, std::function<void()> onSleep) {
     NSNotificationCenter *center=[NSWorkspace sharedWorkspace].notificationCenter;

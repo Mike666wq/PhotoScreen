@@ -77,6 +77,17 @@ jobs:
       - name: Test
         working-directory: build
         run: ctest --output-on-failure --output-junit test-results.xml
+      - name: Show QTest logs
+        if: always()
+        shell: bash
+        run: |
+          # Windows 上 ctest 拿不到 QTest 的标准输出，这里把落盘的日志贴进构建日志。
+          shopt -s nullglob
+          for f in build/reports/*.txt; do
+            echo "===== $f ====="
+            cat "$f"
+          done
+          exit 0
       - name: Upload regression evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

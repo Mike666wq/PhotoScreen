@@ -47,6 +47,15 @@ src/
 
 原生坐标（CG 全局显示坐标、DXGI 物理坐标）只允许出现在 `src/platform/` 内部，转换通过 `core/geometry.h` 的 `logicalMapFromNative()` / `AffineMap` 完成。
 
+## 设置存储约定
+
+`QSettings` 的落盘位置与类型保留方式**因后端而异**：Windows 走注册表，macOS 走 plist。注册表后端会把 `QColor`、`QStringList` 降级成普通字符串，读回来的 `QVariant` 实际类型与 plist 不一致，同一份代码在两个平台上的行为因此不同。
+
+- 颜色一律以 **十六进制字符串**（`#rrggbb`）存放，读回时用 `QColor(...)` 解析；旧版本存的 `QColor` 由 `colorFromSettings()` 兼容。
+- 颜色列表以 **逗号分隔的字符串** 存放，读回时 `split(',')`；旧版本存的 `QStringList` 由 `colorNamesFromSettings()` 兼容。
+- 禁止直接依赖 `QVariant::value<QColor>()` / `value().toStringList()` 从设置里取回复杂类型。
+- 进程启动必须设置组织名与应用名（`src/main.cpp`）。测试二进制同样要在 `initTestCase()` 里设置，否则 `QSettings` 落到与正式程序不同的位置。
+
 ## 构建与验证
 
 **本地只改代码。所有测试由线上 GitHub Actions 执行。**
@@ -63,7 +72,8 @@ cmake -S . -B build && cmake --build build   # ❌ 不要在本地跑
 - 矩阵：macOS 15 (arm64) + Windows 2025 (x64)
 - Qt 6.12.0，MSVC 工具集固定 14.44
 - `ctest` 四项：`photoscreen_core` / `photoscreen_overlay` / `photoscreen_visual_report` / `photoscreen_mac_image`（macOS 才有第四项）
-- 每次构建上传 `Regression-*` 证据包（测试结果 + 合成图像报告）
+- 每个 QTest 目标通过 `-o <build>/reports/<name>.txt,txt` 把逐条 PASS/FAIL 落盘；**Windows 上 `ctest` 不会回显 QTest 的标准输出，定位失败用例只能看这些日志文件**（CI 的 "Show QTest logs" 步骤会把它们贴进构建日志，证据包里也有一份）
+- 每次构建上传 `Regression-*` 证据包（测试结果 + 合成图像报告 + QTest 日志）
 - `main` / PR / 手动触发产出试用包；`vX.Y.Z` 标签产出草稿 Release
 
 **报告口径**：CI 通过 ≠ 真机通过。真机截图、系统屏幕录制授权、跨应用粘贴、真实桌面缩放对齐、开机启动、升级卸载、连续截图资源占用，**一律标注为「未验证」**，直到 `docs/acceptance.md` 记录填写完毕。

@@ -12,6 +12,7 @@
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
+#include <QVariant>
 #include <QtTest>
 
 using namespace photo;
@@ -29,6 +30,12 @@ private:
         QCoreApplication::processEvents();
     }
 private slots:
+    void initTestCase() {
+        // 与 src/main.cpp 保持一致：设置组织名与应用名之后，QSettings 的落盘位置
+        // 在 Windows 注册表与 macOS plist 上才一致，测试结果不会随平台漂移。
+        QCoreApplication::setOrganizationName(QStringLiteral("PhotoScreen"));
+        QCoreApplication::setApplicationName(QStringLiteral("PhotoScreen"));
+    }
     void releasePositionAndCopy() {
         QImage copied; int writes=0;
         auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[&](const QImage &image,QString *) { copied=image; ++writes; return true; });
@@ -402,6 +409,22 @@ private slots:
         QCOMPARE(redo->text(),QStringLiteral("重做"));
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
+    void colorPanelNeverCoversToolbar() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        auto *panel=overlay->findChild<QFrame *>("colorPanel"); QVERIFY(panel);
+        auto *toolbar=overlay->findChild<QFrame *>("captureToolbar"); QVERIFY(toolbar);
+        overlay->findChild<QToolButton *>("colorButton")->click();
+        QVERIFY(panel->isVisible());
+        QVERIFY2(!panel->geometry().intersects(toolbar->geometry()),
+                 qPrintable(QStringLiteral("取色面板 %1,%2 %3×%4 工具栏 %5,%6 %7×%8")
+                            .arg(panel->geometry().x()).arg(panel->geometry().y())
+                            .arg(panel->width()).arg(panel->height())
+                            .arg(toolbar->geometry().x()).arg(toolbar->geometry().y())
+                            .arg(toolbar->width()).arg(toolbar->height())));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
     void colorPanelAppliesPresetColor() {
         auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
         overlay->show(); QCoreApplication::processEvents();
@@ -415,8 +438,8 @@ private slots:
         const quintptr before=colorButton->icon().cacheKey();
         auto *preset=overlay->findChild<QToolButton *>("preset_1"); QVERIFY(preset);   // #ff6b6b
         preset->click();
-        // 预设色写入设置
-        QCOMPARE(QSettings().value("annotation/color").value<QColor>().name(),QStringLiteral("#ff6b6b"));
+        // 预设色写入设置：颜色以十六进制字符串存放，跨后端行为一致。
+        QCOMPARE(QSettings().value("annotation/color").toString(),QStringLiteral("#ff6b6b"));
         // 工具栏色块按钮的图标随之更新
         QVERIFY(colorButton->icon().cacheKey()!=before);
         QTest::keyClick(overlay,Qt::Key_Escape);
@@ -442,14 +465,18 @@ private slots:
         overlay->show(); QCoreApplication::processEvents();
         selectArea(overlay,QPoint(10,10),QPoint(510,400));
         overlay->applyChosenColor(QColor("#00b050"));
-        const QStringList stored=QSettings().value("annotation/recentColors").toStringList();
+        // 最近使用的颜色以逗号分隔的字符串存放，读回时不再依赖后端保留列表类型。
+        const QVariant recentValue=QSettings().value("annotation/recentColors");
+        const QStringList stored=recentValue.typeId().id()==QMetaType::QStringList.id()
+                ? recentValue.toStringList()
+                : recentValue.toString().split(',',Qt::SkipEmptyParts);
         QVERIFY(!stored.isEmpty());
         QCOMPARE(stored.first(),QStringLiteral("#00b050"));
         auto *recent=overlay->findChild<QToolButton *>("recent_0"); QVERIFY(recent);
         QVERIFY(recent->isEnabled());
         // 点最近使用的第一个色块能取回刚才的颜色。
         recent->click();
-        QCOMPARE(QSettings().value("annotation/color").value<QColor>().name(),QStringLiteral("#00b050"));
+        QCOMPARE(QSettings().value("annotation/color").toString(),QStringLiteral("#00b050"));
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
     void draggingAnnotationDoesNotRecropBase() {

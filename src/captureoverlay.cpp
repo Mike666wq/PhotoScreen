@@ -30,6 +30,7 @@
 #include <QAbstractTextDocumentLayout>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QVariant>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
@@ -121,6 +122,29 @@ QVector<QColor> presetColors() {
     for (const char *name : names) result.append(QColor(QString::fromLatin1(name)));
     return result;
 }
+// 设置里的颜色一律以十六进制字符串存放。
+// Windows 注册表后端与 macOS plist 后端对 QColor / QStringList 的类型保留方式不同：
+// 注册表会把它们降级成普通字符串，读回来时 QVariant 的实际类型与 plist 不一致，
+// 导致同一份代码在两个平台上的表现不同。显式存字符串可保证双平台读写一致。
+QColor colorFromSettings(const QVariant &value, const QColor &fallback) {
+    if (value.typeId().id()==QMetaType::QColor.id()) {
+        const QColor stored=value.value<QColor>();
+        if (stored.isValid()) return stored;
+    }
+    const QColor parsed=QColor(value.toString().trimmed());
+    return parsed.isValid() ? parsed : fallback;
+}
+// 最近使用的颜色列表：兼容旧的 QStringList 格式与新的逗号分隔字符串。
+QStringList colorNamesFromSettings(const QVariant &value) {
+    if (value.typeId().id()==QMetaType::QStringList.id()) return value.toStringList();
+    QStringList names;
+    const QStringList parts=value.toString().split(',',Qt::SkipEmptyParts);
+    for (const QString &part : parts) {
+        const QString name=part.trimmed();
+        if (!name.isEmpty()) names.append(name);
+    }
+    return names;
+}
 QIcon toolIcon(Tool tool) {
     QPixmap pixmap(24,24); pixmap.fill(Qt::transparent);
     QPainter p(&pixmap); p.setRenderHint(QPainter::Antialiasing);
@@ -156,7 +180,7 @@ CaptureOverlay::CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWrit
     setGeometry(m_frame.screenGeometry);
     setCursor(Qt::CrossCursor);
     QSettings settings;
-    m_color = settings.value("annotation/color", QColor("#ff3b3b")).value<QColor>();
+    m_color = colorFromSettings(settings.value("annotation/color"), QColor("#ff3b3b"));
     m_lineWidth = settings.value("annotation/width", 3).toInt();
     m_fontSize = settings.value("annotation/fontSize", 18).toInt();
     m_fontWeight = qBound(100,settings.value("annotation/fontWeight", 400).toInt(),900);
@@ -410,17 +434,18 @@ void CaptureOverlay::updateColorPreview() {
 }
 QVector<QColor> CaptureOverlay::recentColors() const {
     QVector<QColor> result;
-    const QStringList stored=QSettings().value("annotation/recentColors").toStringList();
+    const QStringList stored=colorNamesFromSettings(QSettings().value("annotation/recentColors"));
     for (const QString &name : stored) { const QColor color(name); if (color.isValid()) result.append(color); }
     return result;
 }
 void CaptureOverlay::rememberColor(const QColor &color) {
     if (!color.isValid()) return;
-    QStringList stored=QSettings().value("annotation/recentColors").toStringList();
+    QStringList stored=colorNamesFromSettings(QSettings().value("annotation/recentColors"));
     stored.removeAll(color.name());
     stored.prepend(color.name());
     while (stored.size()>8) stored.removeLast();
-    QSettings().setValue("annotation/recentColors",stored);
+    // 用逗号分隔的字符串存放：跨平台读回时列表类型不会被后端改写。
+    QSettings().setValue("annotation/recentColors",stored.join(','));
     updateRecentButtons();
 }
 void CaptureOverlay::updateRecentButtons() {
@@ -458,29 +483,34 @@ void CaptureOverlay::applyRecentColor(int index) {
     applyChosenColor(colors.at(index));
 }
 void CaptureOverlay::positionPanel(QFrame *panel, const QPoint &anchor, bool preferAbove) {
+    // 上次定位留下的最大高度限制要先清掉，否则面板无法恢复原尺寸。
+    panel->setMaximumHeight(QWIDGETSIZE_MAX);
     panel->adjustSize();
     const QRect bounds=rect();
     const QRect toolbarRect=m_toolbar->geometry();
     const int gap=6;
-    const int panelWidth=panel->width(), panelHeight=panel->height();
-    // 两个候选位置：优先方向优先，其次反方向，都要求完整落在覆盖层内。
-    const int preferred=preferAbove ? anchor.y()-panelHeight-gap : anchor.y()+gap;
-    const int alternative=preferAbove ? anchor.y()+gap : anchor.y()-panelHeight-gap;
+    // 工具栏所占的横带是禁区：面板只能整块落在工具栏上方或下方，
+    // 候选位置直接相对工具栏计算，不再依赖锚点，跨平台结果一致。
+    const int aboveY=toolbarRect.top()-gap-panel->height();
+    const int belowY=toolbarRect.bottom()+1+gap;
+    const bool aboveFits=aboveY>=0 && aboveY+panel->height()<=bounds.height();
+    const bool belowFits=belowY>=0 && belowY+panel->height()<=bounds.height();
     int y=-1;
-    for (const int candidate : {preferred,alternative}) {
-        if (candidate<0 || candidate+panelHeight>bounds.height()) continue;
-        y=candidate; break;
+    if (preferAbove ? aboveFits : belowFits) y=preferAbove?aboveY:belowY;
+    else if (preferAbove ? belowFits : aboveFits) y=preferAbove?belowY:aboveY;
+    if (y<0) {
+        // 两侧都放不下时，先压缩面板高度再放进较空的一侧，保证不压住工具栏。
+        const int room=qMax(toolbarRect.top()-gap, bounds.height()-(toolbarRect.bottom()+1)-gap);
+        if (room>0 && room<panel->height() && room>=panel->minimumSizeHint().height()) {
+            panel->setMaximumHeight(room);
+            panel->adjustSize();
+        }
+        // 面板高度变了，候选位置要按新高度重算。
+        y=preferAbove ? toolbarRect.top()-gap-panel->height() : toolbarRect.bottom()+1+gap;
+        y=qBound(0,y,qMax(0,bounds.height()-panel->height()));
     }
-    if (y<0) y=qBound(0,preferred,qMax(0,bounds.height()-panelHeight));
-    const int x=qBound(0,anchor.x()-panelWidth/2,qMax(0,bounds.width()-panelWidth));
+    const int x=qBound(0,anchor.x()-panel->width()/2,qMax(0,bounds.width()-panel->width()));
     panel->move(x,y);
-    // 工具栏矩形是禁区：面板永远不能压住工具栏上的按钮。
-    if (toolbarRect.intersects(panel->geometry())) {
-        const int below=toolbarRect.bottom()+gap;
-        const int above=toolbarRect.top()-gap-panel->height();
-        if (below+panel->height()<=bounds.height()) panel->move(x,below);
-        else if (above>=0) panel->move(x,above);
-    }
     panel->raise();
 }
 void CaptureOverlay::updateColorSwatch() {
@@ -491,7 +521,7 @@ void CaptureOverlay::updateColorSwatch() {
 }
 void CaptureOverlay::applyChosenColor(const QColor &color) {
     if (!color.isValid()) return;
-    m_color=color; QSettings().setValue("annotation/color",color); updateColorSwatch();
+    m_color=color; QSettings().setValue("annotation/color",color.name()); updateColorSwatch();
     if (m_textEditor) {
         // 显式改色才更新正在编辑的文字颜色，颜色与预览始终保持一致。
         m_textColor=color;

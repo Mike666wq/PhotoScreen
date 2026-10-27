@@ -142,17 +142,7 @@ void CaptureOverlay::buildToolbar() {
     m_colorButton->setObjectName("colorButton"); toolsLayout->addWidget(m_colorButton); updateColorSwatch();
     connect(m_colorButton, &QToolButton::clicked, this, [this] {
         const QColor chosen = QColorDialog::getColor(m_color, this, QStringLiteral("标注颜色"));
-        if (chosen.isValid()) {
-            m_color=chosen; QSettings().setValue("annotation/color", chosen); updateColorSwatch();
-            if (m_textEditor) {
-                // 显式改色才更新正在编辑的文字颜色。
-                m_textColor=chosen;
-                m_textEditor->setStyleSheet(QStringLiteral("QTextEdit{border:0;background:rgba(255,255,255,210);color:%1;}").arg(m_color.name()));
-                applyEditorTextStyle();
-            } else if (m_selected>=0 && m_selected<m_document.items().size()) {
-                const int i=m_selected; auto item=m_document.items()[i]; item.color=chosen; m_document.replace(i,item); m_selected=i; update();
-            }
-        }
+        if (chosen.isValid()) applyChosenColor(chosen);
     });
     m_widthButton=new QToolButton(toolArea); m_widthButton->setObjectName("widthButton");
     m_widthButton->setText(QStringLiteral("粗细 %1").arg(m_lineWidth)); m_widthButton->setToolTip(QStringLiteral("线宽 / 箭头粗细"));
@@ -227,6 +217,18 @@ void CaptureOverlay::updateColorSwatch() {
     QPixmap swatch(20,20); swatch.fill(Qt::transparent); QPainter p(&swatch);
     p.setRenderHint(QPainter::Antialiasing); p.setPen(QPen(QColor("#666666"),1)); p.setBrush(m_color); p.drawEllipse(QRectF(3,3,14,14));
     m_colorButton->setIcon(QIcon(swatch)); m_colorButton->setIconSize(QSize(20,20));
+}
+void CaptureOverlay::applyChosenColor(const QColor &color) {
+    if (!color.isValid()) return;
+    m_color=color; QSettings().setValue("annotation/color",color); updateColorSwatch();
+    if (m_textEditor) {
+        // 显式改色才更新正在编辑的文字颜色，颜色与预览始终保持一致。
+        m_textColor=color;
+        m_textEditor->setStyleSheet(QStringLiteral("QTextEdit{border:0;background:rgba(255,255,255,210);color:%1;}").arg(color.name()));
+        applyEditorTextStyle();
+    } else if (m_selected>=0 && m_selected<m_document.items().size()) {
+        const int i=m_selected; auto item=m_document.items()[i]; item.color=color; m_document.replace(i,item); m_selected=i; update();
+    }
 }
 void CaptureOverlay::positionToolbar() {
     if (m_selection.isEmpty()) { m_toolbar->hide(); return; }

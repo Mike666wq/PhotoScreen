@@ -1,11 +1,13 @@
 #include "captureoverlay.h"
 #include <QApplication>
+#include <QFrame>
 #include <QInputMethodEvent>
 #include <QLabel>
 #include <QMessageBox>
 #include <QScreen>
 #include <QSignalSpy>
 #include <QSlider>
+#include <QStringList>
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
@@ -321,6 +323,77 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(overlay->annotations().size(),1);
         QCOMPARE(overlay->undoDepth(),steps);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void stylePanelTogglesWithToolbarButton() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        auto *panel=overlay->findChild<QFrame *>("stylePanel"); QVERIFY(panel);
+        QVERIFY(!panel->isVisible());
+        auto *width=overlay->findChild<QToolButton *>("widthButton"); QVERIFY(width);
+        width->click();
+        QVERIFY(panel->isVisible());
+        // 再点一次收起。
+        width->click();
+        QVERIFY(!panel->isVisible());
+        // 面板内的滑块 objectName 保持不变，既有断言继续有效。
+        QVERIFY(overlay->findChild<QSlider *>("widthControl"));
+        QVERIFY(overlay->findChild<QSlider *>("fontControl"));
+        QVERIFY(overlay->findChild<QSlider *>("fontWeightControl"));
+        QVERIFY(overlay->findChild<QLabel *>("widthValue"));
+        QVERIFY(overlay->findChild<QLabel *>("fontValue"));
+        QVERIFY(overlay->findChild<QLabel *>("fontWeightValue"));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void stylePanelNeverCoversToolbar() {
+        auto *overlay=new CaptureOverlay(frame(320,260),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(300,220));
+        auto *panel=overlay->findChild<QFrame *>("stylePanel"); QVERIFY(panel);
+        auto *toolbar=overlay->findChild<QFrame *>("captureToolbar"); QVERIFY(toolbar);
+        overlay->findChild<QToolButton *>("widthButton")->click();
+        QVERIFY(panel->isVisible());
+        QVERIFY(!panel->geometry().intersects(toolbar->geometry()));
+        // 完成与取消按钮仍然可点，参数面板不能压住它们。
+        QVERIFY(overlay->findChild<QToolButton *>("doneButton")->isVisible());
+        QVERIFY(overlay->findChild<QToolButton *>("cancelButton")->isVisible());
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void stylePanelEscOnlyClosesPanel() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        QSignalSpy finished(overlay,&CaptureOverlay::finished);
+        overlay->show(); QCoreApplication::processEvents();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        auto *panel=overlay->findChild<QFrame *>("stylePanel"); QVERIFY(panel);
+        overlay->findChild<QToolButton *>("widthButton")->click();
+        QVERIFY(panel->isVisible());
+        // 面板打开时 Esc 只收起面板，截图继续。
+        QTest::keyClick(overlay,Qt::Key_Escape);
+        QVERIFY(!panel->isVisible());
+        QCOMPARE(finished.count(),0);
+        QVERIFY(overlay->isVisible());
+        // 再按一次 Esc 才取消截图。
+        QTest::keyClick(overlay,Qt::Key_Escape);
+        QCOMPARE(finished.count(),1);
+    }
+    void toolButtonsCarryChineseLabels() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        const QStringList expected={QStringLiteral("选择"),QStringLiteral("矩形"),QStringLiteral("椭圆"),QStringLiteral("箭头"),
+                                    QStringLiteral("画笔"),QStringLiteral("文字"),QStringLiteral("马赛克")};
+        for (int i=0;i<expected.size();++i) {
+            auto *button=overlay->findChild<QToolButton *>(QStringLiteral("tool_%1").arg(i));
+            QVERIFY(button);
+            QCOMPARE(button->text(),expected.at(i));
+            // 图标 + 文字标签，箭头与画笔不再只能靠 tooltip 区分。
+            QVERIFY(button->toolButtonStyle()==QToolButton::ToolButtonTextUnderIcon);
+            QVERIFY(!button->icon().isNull());
+        }
+        auto *undo=overlay->findChild<QToolButton *>("undoButton"); QVERIFY(undo);
+        QCOMPARE(undo->text(),QStringLiteral("撤销"));
+        auto *redo=overlay->findChild<QToolButton *>("redoButton"); QVERIFY(redo);
+        QCOMPARE(redo->text(),QStringLiteral("重做"));
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
 private:

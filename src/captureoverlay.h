@@ -37,6 +37,11 @@ protected:
 private:
     enum class Drag { None, NewSelection, MoveSelection, ResizeSelection, Draw, MoveObject, ResizeObject, ArrowStart, ArrowEnd };
     void buildToolbar();
+    void buildStylePanel();
+    void toggleStylePanel();
+    void hidePanels();
+    bool panelVisible() const;
+    void positionPanel(QFrame *panel, const QPoint &anchor, bool preferAbove);
     void updateColorSwatch();
     void positionToolbar();
     void setTool(Tool tool);
@@ -79,6 +84,7 @@ private:
     int m_fontSize = 18;
     int m_fontWeight = 400;
     QFrame *m_toolbar = nullptr;
+    QFrame *m_stylePanel = nullptr;
     QToolButton *m_colorButton = nullptr;
     QToolButton *m_undoButton = nullptr;
     QToolButton *m_redoButton = nullptr;

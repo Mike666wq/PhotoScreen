@@ -165,8 +165,9 @@ private slots:
         QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));  // 选中箭头
         auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
         QCOMPARE(overlay->annotations().size(),1);
-        const qreal originalWidth=overlay->annotations().first().width;
         width->setValue(3);
+        // 拖动前的基准宽度，撤销后必须回到这里。
+        const qreal widthBeforeDrag=overlay->annotations().first().width;
         const int stepsBefore=undoSteps(overlay);
         // 模拟一次拖动：按下后连续变值，最后释放。整段拖动只产生一步撤销。
         emit width->sliderPressed();
@@ -177,7 +178,7 @@ private slots:
         // 撤销一次应回到拖动前的状态，而不是只回退一个数值。
         overlay->findChild<QToolButton *>("undoButton")->click();
         QCOMPARE(undoSteps(overlay),stepsBefore);
-        QCOMPARE(overlay->annotations().first().width,originalWidth);
+        QCOMPARE(overlay->annotations().first().width,widthBeforeDrag);
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
     void keyboardStyleChangeIsSingleUndoStep() {
@@ -190,8 +191,8 @@ private slots:
         QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(200,100));
         auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
         QCOMPARE(overlay->annotations().size(),1);
-        const qreal originalWidth=overlay->annotations().first().width;
         width->setValue(3);
+        const qreal widthBeforeChange=overlay->annotations().first().width;
         const int stepsBefore=undoSteps(overlay);
         // 键盘方向键调整：不经过 sliderPressed，每次调整仍应各自可撤销。
         width->setValue(6);
@@ -199,7 +200,7 @@ private slots:
         QCOMPARE(overlay->annotations().first().width,6.0);
         overlay->findChild<QToolButton *>("undoButton")->click();
         QCOMPARE(undoSteps(overlay),stepsBefore);
-        QCOMPARE(overlay->annotations().first().width,originalWidth);
+        QCOMPARE(overlay->annotations().first().width,widthBeforeChange);
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
     void undoStillWorksAfterInterruptedDrag() {

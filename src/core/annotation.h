@@ -33,7 +33,8 @@ public:
     void replace(int index, const Annotation &item);
     void remove(int index);
     QUndoStack *undoStack() { return &m_undo; }
-    int undoDepth() const { return m_undo.count(); }
+    // 剩余可撤销的步数。已撤销的命令不计入，因此撤销一次该值就减一。
+    int undoDepth() const { return m_undo.index(); }
     void setItemsForCommand(const QVector<Annotation> &items) { m_items = items; }
     // 样式编辑会话：会话期间的改动不立即入撤销栈，endEdit() 时合并为一条命令。
     // 连续拖动滑块因此只产生一步撤销，且会话不会泄漏到撤销栈状态里。

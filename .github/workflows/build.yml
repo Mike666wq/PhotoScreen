@@ -115,10 +115,11 @@ jobs:
             echo 'Release already exists. Do not replace previously built artifacts.' >&2
             exit 1
           fi
-          existing_commit="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha 2>/dev/null || true)"
-          if [[ -n "$existing_commit" && "$existing_commit" != "$GITHUB_SHA" ]]; then
-            echo 'The requested tag points to a different commit.' >&2
-            exit 1
+          if existing_commit="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha 2>/dev/null)"; then
+            if [[ "$existing_commit" != "$GITHUB_SHA" ]]; then
+              echo 'The requested tag points to a different commit.' >&2
+              exit 1
+            fi
           fi
           cd artifacts
           shopt -s nullglob

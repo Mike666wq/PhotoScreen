@@ -18,9 +18,11 @@ jobs:
           - os: macos-15
             platform: macos-arm64
             qt_arch: clang_64
+            qt_extra: ''
           - os: windows-2025
             platform: windows-x64
             qt_arch: win64_msvc2022_64
+            qt_extra: '--external 7z'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -33,7 +35,9 @@ jobs:
           version: '6.12.0'
           arch: ${{ matrix.qt_arch }}
           cache: 'true'
-          aqtversion: '==3.3.0'
+          # 3.3.0 cannot read Qt 6.11+ Windows repository paths; pin the upstream fix.
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b'
+          extra: ${{ matrix.qt_extra }}
       - name: Version
         id: version
         shell: bash

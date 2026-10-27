@@ -1,5 +1,6 @@
 #include "platform.h"
 #include <QAbstractNativeEventFilter>
+#include <QApplication>
 #include <QBuffer>
 #include <QCoreApplication>
 #include <QCursor>
@@ -10,6 +11,7 @@
 #include <QScreen>
 #include <QSettings>
 #include <QTransform>
+#include <QWidget>
 #include <Windows.h>
 #include <d3d11.h>
 #include <dwmapi.h>
@@ -175,7 +177,9 @@ bool writeClipboard(const QImage &image, QString *error) {
         if (v5Memory) GlobalFree(v5Memory); if (dibMemory) GlobalFree(dibMemory); if (pngMemory) GlobalFree(pngMemory);
         *error=QStringLiteral("无法分配剪贴板内存。" ); return false;
     }
-    if (!OpenClipboard(nullptr)) { GlobalFree(v5Memory); GlobalFree(dibMemory); GlobalFree(pngMemory); *error=QStringLiteral("剪贴板正被其他程序占用，请重试。" ); return false; }
+    QWidget *active=QApplication::activeWindow();
+    HWND owner=active ? reinterpret_cast<HWND>(active->winId()) : nullptr;
+    if (!owner || !OpenClipboard(owner)) { GlobalFree(v5Memory); GlobalFree(dibMemory); GlobalFree(pngMemory); *error=QStringLiteral("剪贴板正被其他程序占用，请重试。" ); return false; }
     if (!EmptyClipboard()) { CloseClipboard(); GlobalFree(v5Memory); GlobalFree(dibMemory); GlobalFree(pngMemory); *error=QStringLiteral("无法打开剪贴板，请重试。" ); return false; }
     bool ok=false;
     if (SetClipboardData(CF_DIBV5,v5Memory)) ok=true; else GlobalFree(v5Memory);
@@ -205,6 +209,7 @@ bool acquireSingleInstance() {
     return true;
 }
 void installEnvironmentMonitor(QObject *context, std::function<void()> onSleep) { new WinPowerMonitor(context,std::move(onSleep)); }
+void configureOverlay(QWidget *) {}
 std::unique_ptr<HotkeyService> createHotkeyService() { return std::make_unique<WinHotkey>(); }
 QKeySequence defaultShortcut() { return QKeySequence(QKeyCombination(Qt::ControlModifier|Qt::AltModifier,Qt::Key_A)); }
 }

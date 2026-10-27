@@ -221,7 +221,7 @@ void CaptureOverlay::mouseMoveEvent(QMouseEvent *event) {
     if (m_drag==Drag::NewSelection) { if (QLineF(m_press,m_pointer).length()>=3) m_selection=normalizedAt(m_press,m_pointer); }
     else if (m_drag==Drag::MoveSelection) {
         QRectF r=m_startRect.translated(m_pointer-m_press);
-        r.moveLeft(qBound(0.0,r.left(),qMax(0.0,width()-r.width()))); r.moveTop(qBound(0.0,r.top(),qMax(0.0,height()-r.height())); m_selection=r;
+        r.moveLeft(qBound(0.0,r.left(),qMax(0.0,width()-r.width()))); r.moveTop(qBound(0.0,r.top(),qMax(0.0,height()-r.height()))); m_selection=r;
     } else if (m_drag==Drag::ResizeSelection) m_selection=resizeRect(m_startRect,m_handle,m_pointer);
     else if (m_drag==Drag::Draw) { m_preview.rect=QRectF(m_press,m_pointer); if (m_tool==Tool::Pen) m_preview.points.append(m_pointer); }
     else if (m_drag==Drag::MoveObject) { m_preview=m_startAnnotation; m_preview.translate(m_pointer-m_press); m_hasPreview=true; }

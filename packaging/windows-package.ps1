@@ -17,10 +17,8 @@ if (-not (Test-Path "$stage\vcruntime140.dll")) { throw 'MSVC runtime missing' }
 $headers = & dumpbin /headers "$stage\PhotoScreen.exe" | Out-String
 if ($LASTEXITCODE -ne 0 -or $headers -notmatch '8664 machine \(x64\)') { throw 'Application is not x64' }
 Compress-Archive -Path "$stage\*" -DestinationPath "$dist\PhotoScreen-$Version-windows-x64.zip" -Force
-if ($env:GITHUB_REF_TYPE -eq 'tag') {
-    $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
-    if (-not (Test-Path $iscc)) { throw 'Inno Setup 6 is not installed on the runner' }
-    & $iscc /Qp "/DMyAppVersion=$Version" "/DSourceDir=$stage" "/DOutputDir=$dist" 'packaging\windows.iss'
-    if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed' }
-    if (-not (Test-Path "$dist\PhotoScreen-$Version-windows-x64-setup.exe")) { throw 'Installer missing' }
-}
+$iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+if (-not (Test-Path $iscc)) { throw 'Inno Setup 6 is not installed on the runner' }
+& $iscc /Qp "/DMyAppVersion=$Version" "/DSourceDir=$stage" "/DOutputDir=$dist" 'packaging\windows.iss'
+if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed' }
+if (-not (Test-Path "$dist\PhotoScreen-$Version-windows-x64-setup.exe")) { throw 'Installer missing' }

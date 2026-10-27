@@ -8,6 +8,7 @@
 #include <QPointer>
 #include <QScreen>
 #include <QStandardPaths>
+#include <QWidget>
 #include <AppKit/AppKit.h>
 #include <Carbon/Carbon.h>
 #include <CoreGraphics/CoreGraphics.h>
@@ -173,6 +174,14 @@ void installEnvironmentMonitor(QObject *context, std::function<void()> onSleep) 
     NSNotificationCenter *center=[NSWorkspace sharedWorkspace].notificationCenter;
     id token=[center addObserverForName:NSWorkspaceWillSleepNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *) { onSleep(); }];
     QObject::connect(context,&QObject::destroyed,[center,token] { [center removeObserver:token]; });
+}
+void configureOverlay(QWidget *widget) {
+    NSView *view=(__bridge NSView *)reinterpret_cast<void *>(widget->winId());
+    NSWindow *window=view.window;
+    window.collectionBehavior=NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorIgnoresCycle;
+    window.level=NSScreenSaverWindowLevel;
+    [NSApp activateIgnoringOtherApps:YES];
+    [window makeKeyAndOrderFront:nil];
 }
 std::unique_ptr<HotkeyService> createHotkeyService() { return std::make_unique<MacHotkey>(); }
 QKeySequence defaultShortcut() { return QKeySequence(QKeyCombination(Qt::ControlModifier|Qt::MetaModifier,Qt::Key_A)); }

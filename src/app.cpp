@@ -73,7 +73,7 @@ void App::beginCapture() {
             m_overlay=new CaptureOverlay(std::move(result.frame),selected);
             connect(m_overlay,&CaptureOverlay::finished,this,[this] { m_overlay=nullptr; });
             connect(m_overlay,&QObject::destroyed,this,[this] { m_overlay=nullptr; });
-            m_overlay->show(); m_overlay->raise(); m_overlay->activateWindow(); m_overlay->setFocus();
+            m_overlay->show(); configureOverlay(m_overlay); m_overlay->raise(); m_overlay->activateWindow(); m_overlay->setFocus();
         });
     });
 }

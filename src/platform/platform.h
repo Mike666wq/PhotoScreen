@@ -8,6 +8,7 @@
 #include <memory>
 
 class QScreen;
+class QWidget;
 namespace photo {
 struct ScreenFrame {
     QImage image;
@@ -26,6 +27,7 @@ bool isStartupEnabled();
 bool setStartupEnabled(bool enabled, QString *error);
 bool acquireSingleInstance();
 void installEnvironmentMonitor(QObject *context, std::function<void()> onSleep);
+void configureOverlay(QWidget *widget);
 
 class HotkeyService {
 public:

@@ -5,6 +5,12 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '留空构建试用包；填 vX.Y.Z 创建草稿 Release'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -30,7 +36,8 @@ jobs:
         if: runner.os == 'Windows'
         with:
           arch: x64
-          vsversion: '2022'
+          # windows-2025 now ships VS 2026; select its installed VS 2022 (14.44) toolset.
+          toolset: '14.44'
       - name: Prepare Qt extraction directory
         if: runner.os == 'Windows'
         shell: pwsh
@@ -46,11 +53,17 @@ jobs:
       - name: Version
         id: version
         shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
         run: |
           version=0.0.0
+          tag="${REQUESTED_TAG:-}"
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
-            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected vX.Y.Z'; exit 1; }
-            version="${GITHUB_REF_NAME#v}"
+            tag="$GITHUB_REF_NAME"
+          fi
+          if [[ -n "$tag" ]]; then
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected vX.Y.Z'; exit 1; }
+            version="${tag#v}"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Configure
@@ -79,7 +92,7 @@ jobs:
           if-no-files-found: error
 
   draft-release:
-    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    if: (startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -95,10 +108,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo 'Release already exists. Do not replace previously built artifacts.' >&2
+            exit 1
+          fi
+          existing_commit="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha 2>/dev/null || true)"
+          if [[ -n "$existing_commit" && "$existing_commit" != "$GITHUB_SHA" ]]; then
+            echo 'The requested tag points to a different commit.' >&2
             exit 1
           fi
           cd artifacts
@@ -106,6 +125,6 @@ jobs:
           installers=(*-setup.exe *.dmg)
           [[ ${#installers[@]} -eq 2 ]] || { echo 'Expected exactly one installer per platform.' >&2; exit 1; }
           sha256sum "${installers[@]}" > SHA256SUMS.txt
-          gh release create "$GITHUB_REF_NAME" --draft --title "PhotoScreen $GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --draft --title "PhotoScreen $RELEASE_TAG" \
             --notes '请先在 Mac 和 Windows 实机安装验收，再发布此草稿。Mac 为 ad-hoc 签名，Windows 安装器未签名。' \
             "${installers[@]}" SHA256SUMS.txt

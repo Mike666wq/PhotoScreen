@@ -11,12 +11,20 @@
 #include <algorithm>
 
 namespace photo {
+// 笔迹点的精确极值范围，不含 epsilon，避免包围盒与缩放归一化之间产生微小偏移。
+static QRectF exactPointsBox(const QVector<QPointF> &points) {
+    if (points.isEmpty()) return {};
+    qreal minX=points.first().x(), maxX=minX, minY=points.first().y(), maxY=minY;
+    for (const auto &point : points) {
+        minX=qMin(minX,point.x()); maxX=qMax(maxX,point.x());
+        minY=qMin(minY,point.y()); maxY=qMax(maxY,point.y());
+    }
+    return QRectF(QPointF(minX,minY), QPointF(maxX,maxY));
+}
 QRectF Annotation::bounds() const {
     if (tool == Tool::Arrow) return arrowPath(*this).boundingRect();
     if (tool == Tool::Pen && !points.isEmpty()) {
-        QRectF box(points.first(), QSizeF(0, 0));
-        for (const auto &point : points) box = box.united(QRectF(point, QSizeF(0.01, 0.01)));
-        return box.adjusted(-width, -width, width, width);
+        return exactPointsBox(points).adjusted(-width, -width, width, width);
     }
     return rect.normalized();
 }
@@ -44,6 +52,25 @@ QPainterPath arrowPath(const Annotation &a) {
 }
 bool annotationContains(const Annotation &a, const QPointF &point, qreal tolerance) {
     if (a.tool==Tool::Text) return a.bounds().adjusted(-tolerance,-tolerance,tolerance,tolerance).contains(point);
+    if (a.tool==Tool::Mosaic) {
+        // 马赛克覆盖整个矩形区域，区域内任意位置都应命中。
+        return a.rect.normalized().adjusted(-tolerance,-tolerance,tolerance,tolerance).contains(point);
+    }
+    if (a.tool==Tool::Pen) {
+        if (a.points.isEmpty()) return false;
+        if (a.points.size()==1) {
+            // 单点笔迹是一个圆点，命中半径为线宽一半加容差。
+            const qreal radius=qMax<qreal>(1,a.width)/2+tolerance;
+            const QPointF center=a.points.first();
+            return QRectF(center.x()-radius,center.y()-radius,radius*2,radius*2).contains(point);
+        }
+        QPainterPath path;
+        path.moveTo(a.points.first());
+        for (qsizetype i=1;i<a.points.size();++i) path.lineTo(a.points[i]);
+        QPainterPathStroker stroker; stroker.setWidth(qMax<qreal>(1,a.width)+2*tolerance);
+        stroker.setCapStyle(Qt::RoundCap); stroker.setJoinStyle(Qt::RoundJoin);
+        return stroker.createStroke(path).contains(point);
+    }
     QPainterPath path;
     if (a.tool==Tool::Arrow) path=arrowPath(a);
     else if (a.tool==Tool::Rectangle) path.addRect(a.rect.normalized());
@@ -57,6 +84,23 @@ void Annotation::translate(const QPointF &delta) {
     for (auto &point : points) point += delta;
 }
 void Annotation::setBounds(const QRectF &target) {
+    if (tool==Tool::Pen && !points.isEmpty()) {
+        // bounds() 含线宽外扩，而 points 不含；按原始包围盒归一化，避免缩放后整体偏移一个线宽。
+        const QRectF raw = exactPointsBox(points);
+        const QRectF inner = target.normalized().adjusted(width, width, -width, -width);
+        if (points.size()==1) {
+            points[0] = inner.center();
+            rect = target;
+            return;
+        }
+        // 水平或垂直笔迹的包围盒有一边为 0，属正常情况，只在对应轴上不缩放。
+        const qreal sx = raw.width()  > 0 ? inner.width() /raw.width()  : 1;
+        const qreal sy = raw.height() > 0 ? inner.height()/raw.height() : 1;
+        for (auto &p : points)
+            p = QPointF(inner.left() + (p.x()-raw.left())*sx, inner.top() + (p.y()-raw.top())*sy);
+        rect = target;
+        return;
+    }
     const QRectF old = bounds();
     if (old.isEmpty()) { rect = target; return; }
     if (!points.isEmpty()) {
@@ -110,7 +154,12 @@ void configureTextDocument(QTextDocument &document, const Annotation &a) {
 void drawAnnotation(QPainter &p, const Annotation &a) {
     p.save();
     p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(a.color, a.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    // 按工具区分笔刷：矩形必须是直角，画笔保留圆头圆角，箭头为填充路径不受笔刷影响。
+    Qt::PenCapStyle cap = Qt::RoundCap;
+    Qt::PenJoinStyle join = Qt::RoundJoin;
+    if (a.tool==Tool::Rectangle) { cap = Qt::SquareCap; join = Qt::MiterJoin; }
+    else if (a.tool==Tool::Ellipse) { cap = Qt::FlatCap; join = Qt::MiterJoin; }
+    p.setPen(QPen(a.color, a.width, Qt::SolidLine, cap, join));
     p.setBrush(Qt::NoBrush);
     switch (a.tool) {
     case Tool::Rectangle: p.drawRect(a.rect.normalized()); break;

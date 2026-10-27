@@ -387,7 +387,7 @@ private slots:
             QVERIFY(button);
             QCOMPARE(button->text(),expected.at(i));
             // 图标 + 文字标签，箭头与画笔不再只能靠 tooltip 区分。
-            QVERIFY(button->toolButtonStyle()==QToolButton::ToolButtonTextUnderIcon);
+            QVERIFY(button->toolButtonStyle()==Qt::ToolButtonTextUnderIcon);
             QVERIFY(!button->icon().isNull());
         }
         auto *undo=overlay->findChild<QToolButton *>("undoButton"); QVERIFY(undo);

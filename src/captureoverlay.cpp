@@ -2,9 +2,9 @@
 #include "core/geometry.h"
 #include <QApplication>
 #include <QButtonGroup>
-#include <QColorDialog>
 #include <QEvent>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QKeyEvent>
@@ -48,6 +48,8 @@ QVector<QPointF> handles(const QRectF &r) {
 class StyledSlider : public QSlider {
 public:
     explicit StyledSlider(QWidget *parent=nullptr) : QSlider(parent) { setMinimumHeight(26); }
+    // 轨道填充渐变（色相条、明度条用）；设置后不再画“已选部分”填充。
+    void setGrooveGradient(const QLinearGradient &gradient) { m_gradient=gradient; m_hasGradient=true; update(); }
 protected:
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
@@ -61,10 +63,11 @@ protected:
         const QRect groove(handleRadius,(height()-grooveHeight)/2,travel,grooveHeight);
         const int position=QStyle::sliderPositionFromValue(minimum(),maximum(),value(),travel,groove.width());
         // 轨道
-        p.setPen(QPen(QColor("#9aa0a6"),1)); p.setBrush(QColor("#dfe1e5"));
+        p.setPen(QPen(QColor("#9aa0a6"),1));
+        p.setBrush(m_hasGradient ? QBrush(m_gradient) : QBrush(QColor("#dfe1e5")));
         p.drawRoundedRect(groove,2,2);
         // 已选部分
-        if (position>0) {
+        if (!m_hasGradient && position>0) {
             p.setPen(Qt::NoPen); p.setBrush(QColor("#1687ef"));
             p.drawRoundedRect(QRect(groove.left(),groove.top(),position,groove.height()),2,2);
         }
@@ -81,6 +84,9 @@ protected:
         p.setPen(QPen(QColor("#5f6368"),1)); p.setBrush(QColor("#ffffff"));
         p.drawEllipse(QPoint(groove.left()+position,groove.center().y()),handleRadius,handleRadius);
     }
+private:
+    QLinearGradient m_gradient;
+    bool m_hasGradient=false;
 };
 // 参数面板里的一行：名称 + 自绘滑块 + 紧贴滑块右端的数值。
 StyledSlider *addStyledSlider(QHBoxLayout *row, const QString &title, int minimum, int maximum, int value, QLabel **valueLabel) {
@@ -93,6 +99,22 @@ StyledSlider *addStyledSlider(QHBoxLayout *row, const QString &title, int minimu
     *valueLabel=number;
     QObject::connect(slider,&QSlider::valueChanged,number,[number](int n) { number->setText(QString::number(n)); });
     return slider;
+}
+// 预设色板：8 个色相 × 3 个深浅，按列排布。
+QVector<QColor> presetColors() {
+    static const char *names[] = {
+        "#ff3b3b","#ff6b6b","#c62828",
+        "#ff9500","#ffb340","#c76b00",
+        "#ffcc00","#ffdd66","#b38f00",
+        "#34c759","#6ee08a","#1f8f3c",
+        "#00c7be","#5be0d8","#008f88",
+        "#0a84ff","#66b3ff","#0060cc",
+        "#bf5af2","#d79bff","#8a2fc4",
+        "#ff2d55","#ff7a95","#cc0f36"
+    };
+    QVector<QColor> result;
+    for (const char *name : names) result.append(QColor(QString::fromLatin1(name)));
+    return result;
 }
 QIcon toolIcon(Tool tool) {
     QPixmap pixmap(24,24); pixmap.fill(Qt::transparent);
@@ -175,10 +197,7 @@ void CaptureOverlay::buildToolbar() {
     }
     m_colorButton = new QToolButton(toolArea); m_colorButton->setToolTip(QStringLiteral("颜色")); m_colorButton->setAccessibleName(QStringLiteral("颜色"));
     m_colorButton->setObjectName("colorButton"); toolsLayout->addWidget(m_colorButton); updateColorSwatch();
-    connect(m_colorButton, &QToolButton::clicked, this, [this] {
-        const QColor chosen = QColorDialog::getColor(m_color, this, QStringLiteral("标注颜色"));
-        if (chosen.isValid()) applyChosenColor(chosen);
-    });
+    connect(m_colorButton, &QToolButton::clicked, this, [this] { toggleColorPanel(); });
     m_widthButton=new QToolButton(toolArea); m_widthButton->setObjectName("widthButton");
     m_widthButton->setText(QStringLiteral("粗细 %1").arg(m_lineWidth)); m_widthButton->setToolTip(QStringLiteral("线宽 / 箭头粗细"));
     m_widthButton->setAccessibleName(QStringLiteral("线宽 / 箭头粗细")); toolsLayout->addWidget(m_widthButton);
@@ -187,6 +206,7 @@ void CaptureOverlay::buildToolbar() {
     m_fontButton->setToolTip(QStringLiteral("文字大小和粗细")); m_fontButton->setAccessibleName(QStringLiteral("文字大小和粗细")); toolsLayout->addWidget(m_fontButton);
     connect(m_fontButton, &QToolButton::clicked, this, [this] { toggleStylePanel(); });
     buildStylePanel();
+    buildColorPanel();
     connect(m_widthControl, &QSlider::valueChanged, this, [this](int n) {
         m_lineWidth=n; QSettings().setValue("annotation/width",n);
         m_widthButton->setText(QStringLiteral("粗细 %1").arg(n));
@@ -279,11 +299,151 @@ void CaptureOverlay::toggleStylePanel() {
     const QPoint anchor=m_toolbar->mapTo(this,QPoint(m_toolbar->width()/2,0));
     positionPanel(m_stylePanel,anchor,true);
 }
-void CaptureOverlay::hidePanels() {
-    if (m_stylePanel) m_stylePanel->hide();
+void CaptureOverlay::buildColorPanel() {
+    // 自绘取色面板：原生 QColorDialog 在 macOS 会被覆盖层（NSScreenSaverWindowLevel）吞掉。
+    m_colorPanel=new QFrame(this);
+    m_colorPanel->setObjectName("colorPanel");
+    m_colorPanel->setStyleSheet("QFrame#colorPanel{background:#f8f8f8;border:1px solid #aaa;border-radius:6px;}"
+                                "QLabel{color:#222;}");
+    auto *layout=new QVBoxLayout(m_colorPanel);
+    layout->setContentsMargins(12,10,12,10); layout->setSpacing(8);
+
+    auto *grid=new QGridLayout; grid->setSpacing(4);
+    const QVector<QColor> presets=presetColors();
+    for (int i=0;i<presets.size();++i) {
+        auto *button=new QToolButton(m_colorPanel);
+        button->setObjectName(QStringLiteral("preset_%1").arg(i));
+        button->setFixedSize(22,22);
+        button->setToolTip(presets.at(i).name());
+        button->setAccessibleName(presets.at(i).name());
+        connect(button,&QToolButton::clicked,this,[this,color=presets.at(i)] { applyChosenColor(color); });
+        grid->addWidget(button,i/8,i%8);
+    }
+    layout->addLayout(grid);
+
+    auto *hueRow=new QHBoxLayout;
+    auto *hueName=new QLabel(QStringLiteral("色相"));
+    m_hueControl=new StyledSlider; m_hueControl->setRange(0,360); m_hueControl->setValue(0);
+    m_hueControl->setObjectName("hueControl"); m_hueControl->setAccessibleName(QStringLiteral("色相"));
+    QLinearGradient hue; hue.setCoordinateMode(QGradient::ObjectBoundingMode);
+    hue.setColorAt(0.00,QColor("#ff0000")); hue.setColorAt(0.17,QColor("#ffff00"));
+    hue.setColorAt(0.33,QColor("#00ff00")); hue.setColorAt(0.50,QColor("#00ffff"));
+    hue.setColorAt(0.67,QColor("#0000ff")); hue.setColorAt(0.83,QColor("#ff00ff"));
+    hue.setColorAt(1.00,QColor("#ff0000"));
+    m_hueControl->setGrooveGradient(hue);
+    hueRow->addWidget(hueName); hueRow->addWidget(m_hueControl,1);
+    layout->addLayout(hueRow);
+
+    auto *valueRow=new QHBoxLayout;
+    auto *valueName=new QLabel(QStringLiteral("明度"));
+    m_valueControl=new StyledSlider; m_valueControl->setRange(0,100); m_valueControl->setValue(100);
+    m_valueControl->setObjectName("valueControl"); m_valueControl->setAccessibleName(QStringLiteral("明度"));
+    valueRow->addWidget(valueName); valueRow->addWidget(m_valueControl,1);
+    layout->addLayout(valueRow);
+
+    m_colorPreview=new QToolButton(m_colorPanel);
+    m_colorPreview->setObjectName("colorPreview");
+    m_colorPreview->setFixedHeight(24);
+    m_colorPreview->setToolTip(QStringLiteral("使用当前颜色"));
+    m_colorPreview->setAccessibleName(QStringLiteral("颜色预览"));
+    layout->addWidget(m_colorPreview);
+
+    auto *recent=new QHBoxLayout; recent->setSpacing(4);
+    for (int i=0;i<8;++i) {
+        auto *button=new QToolButton(m_colorPanel);
+        button->setObjectName(QStringLiteral("recent_%1").arg(i));
+        button->setFixedSize(18,18);
+        connect(button,&QToolButton::clicked,this,[this,i] { applyRecentColor(i); });
+        recent->addWidget(button);
+    }
+    layout->addLayout(recent);
+
+    connect(m_hueControl,&QSlider::valueChanged,this,[this](int) { updateColorPreview(); });
+    connect(m_valueControl,&QSlider::valueChanged,this,[this](int) { updateColorPreview(); });
+    connect(m_hueControl,&QSlider::sliderReleased,this,[this] { applyChosenColor(previewColor()); });
+    connect(m_valueControl,&QSlider::sliderReleased,this,[this] { applyChosenColor(previewColor()); });
+    connect(m_colorPreview,&QToolButton::clicked,this,[this] { applyChosenColor(previewColor()); });
+
+    updateColorPreview();
+    updateRecentButtons();
+    updatePresetHighlight();
+    m_colorPanel->hide();
 }
-bool CaptureOverlay::panelVisible() const {
-    return m_stylePanel && m_stylePanel->isVisible();
+void CaptureOverlay::toggleColorPanel() {
+    if (m_colorPanel->isVisible()) { hidePanels(); return; }
+    hidePanels();
+    m_colorPanel->show();
+    updateColorPreview();
+    updateRecentButtons();
+    updatePresetHighlight();
+    const QPoint anchor=m_colorButton->mapTo(this,QPoint(m_colorButton->width()/2,m_colorButton->height()));
+    positionPanel(m_colorPanel,anchor,false);
+}
+QColor CaptureOverlay::previewColor() const {
+    const int h=m_hueControl ? m_hueControl->value() : 0;
+    const int v=m_valueControl ? m_valueControl->value() : 100;
+    return QColor::fromHsvF(qBound(0,h,360)/360.0, 1.0, qBound(0,v,100)/100.0);
+}
+void CaptureOverlay::updateColorPreview() {
+    if (!m_colorPreview) return;
+    const QColor color=previewColor();
+    m_colorPreview->setStyleSheet(QStringLiteral("QToolButton#colorPreview{background:%1;border:1px solid #999;border-radius:3px;}").arg(color.name()));
+    if (m_valueControl && m_hueControl) {
+        // 明度条：白 → 当前色相的纯色。
+        QLinearGradient gradient; gradient.setCoordinateMode(QGradient::ObjectBoundingMode);
+        gradient.setColorAt(0.0,QColor(Qt::white));
+        gradient.setColorAt(1.0,QColor::fromHsvF(m_hueControl->value()/360.0,1.0,1.0));
+        m_valueControl->setGrooveGradient(gradient);
+    }
+}
+QVector<QColor> CaptureOverlay::recentColors() const {
+    QVector<QColor> result;
+    const QStringList stored=QSettings().value("annotation/recentColors").toStringList();
+    for (const QString &name : stored) { const QColor color(name); if (color.isValid()) result.append(color); }
+    return result;
+}
+void CaptureOverlay::rememberColor(const QColor &color) {
+    if (!color.isValid()) return;
+    QStringList stored=QSettings().value("annotation/recentColors").toStringList();
+    stored.removeAll(color.name());
+    stored.prepend(color.name());
+    while (stored.size()>8) stored.removeLast();
+    QSettings().setValue("annotation/recentColors",stored);
+    updateRecentButtons();
+}
+void CaptureOverlay::updateRecentButtons() {
+    if (!m_colorPanel) return;
+    const QVector<QColor> colors=recentColors();
+    for (int i=0;i<8;++i) {
+        auto *button=m_colorPanel->findChild<QToolButton *>(QStringLiteral("recent_%1").arg(i));
+        if (!button) continue;
+        const QColor color=i<colors.size()?colors.at(i):QColor();
+        if (color.isValid()) {
+            button->setStyleSheet(QStringLiteral("QToolButton{background:%1;border:1px solid #999;}").arg(color.name()));
+            button->setToolTip(color.name());
+            button->setEnabled(true);
+        } else {
+            button->setStyleSheet(QStringLiteral("QToolButton{background:transparent;border:1px dashed #ccc;}"));
+            button->setToolTip(QString());
+            button->setEnabled(false);
+        }
+    }
+}
+void CaptureOverlay::updatePresetHighlight() {
+    if (!m_colorPanel) return;
+    const QVector<QColor> presets=presetColors();
+    for (int i=0;i<presets.size();++i) {
+        auto *button=m_colorPanel->findChild<QToolButton *>(QStringLiteral("preset_%1").arg(i));
+        if (!button) continue;
+        const bool current=(presets.at(i)==m_color);
+        button->setStyleSheet(QStringLiteral("QToolButton{background:%1;border:%2 solid %3;border-radius:3px;}")
+                              .arg(presets.at(i).name(),current?"2px":"1px",current?"#1687ef":"#999"));
+    }
+}
+void CaptureOverlay::applyRecentColor(int index) {
+    const QVector<QColor> colors=recentColors();
+    if (index<0 || index>=colors.size()) return;
+    applyChosenColor(colors.at(index));
 }
 void CaptureOverlay::positionPanel(QFrame *panel, const QPoint &anchor, bool preferAbove) {
     panel->adjustSize();
@@ -324,6 +484,8 @@ void CaptureOverlay::applyChosenColor(const QColor &color) {
     } else if (m_selected>=0 && m_selected<m_document.items().size()) {
         const int i=m_selected; auto item=m_document.items()[i]; item.color=color; m_document.replace(i,item); m_selected=i; update();
     }
+    rememberColor(color);
+    updatePresetHighlight();
 }
 void CaptureOverlay::positionToolbar() {
     if (m_selection.isEmpty()) { m_toolbar->hide(); return; }

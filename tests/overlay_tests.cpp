@@ -88,8 +88,94 @@ private slots:
         overlay->findChild<QSlider *>("widthControl")->setValue(9);
         overlay->close();
         QCOMPARE(finished.count(),1);
-        QCOMPARE(QSettings().value("annotation/width").toInt(),9);
+        QCOMPARE(QSettings().value("annotation/tools/rectangle/width").toInt(),9);
         QVERIFY(overlay->annotations().isEmpty());
+    }
+    void toolsRememberIndependentStylesAndSelectionDoesNotWriteDefaults() {
+        QSettings settings;
+        settings.setValue("annotation/width",5);
+        settings.setValue("annotation/color",QStringLiteral("#112233"));
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_3"),Qt::LeftButton);
+        QCOMPARE(width->value(),5); width->setValue(12); overlay->applyChosenColor(QColor("#ff3b3b"));
+        selectArea(overlay,QPoint(50,80),QPoint(300,100));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_1"),Qt::LeftButton);
+        QCOMPARE(width->value(),5); width->setValue(2); overlay->applyChosenColor(QColor("#0a84ff"));
+        selectArea(overlay,QPoint(50,160),QPoint(300,240));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_3"),Qt::LeftButton);
+        QCOMPARE(width->value(),12);
+        QTest::qWait(450);
+        const QStringList keysBefore=settings.allKeys();
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_0"),Qt::LeftButton);
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(50,200));
+        QCOMPARE(width->value(),2);
+        QTest::qWait(450);
+        QCOMPARE(settings.allKeys(),keysBefore);
+        QCOMPARE(settings.value("annotation/tools/arrow/width").toInt(),12);
+        QCOMPARE(settings.value("annotation/tools/rectangle/width").toInt(),2);
+        QCOMPARE(settings.value("annotation/tools/arrow/color").toString(),QStringLiteral("#ff3b3b"));
+        QCOMPARE(settings.value("annotation/tools/rectangle/color").toString(),QStringLiteral("#0a84ff"));
+        overlay->close(); QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+        auto *again=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        again->show(); selectArea(again,QPoint(10,10),QPoint(510,400));
+        QTest::mouseClick(again->findChild<QToolButton *>("tool_3"),Qt::LeftButton);
+        QCOMPARE(again->findChild<QSlider *>("widthControl")->value(),12);
+    }
+    void readingLegacyPreferencesDoesNotCreateToolSettings() {
+        QSettings settings;
+        settings.setValue("annotation/color",QStringLiteral("#123456")); settings.setValue("annotation/width",7);
+        const QStringList before=settings.allKeys();
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_3"),Qt::LeftButton);
+        QCOMPARE(overlay->findChild<QSlider *>("widthControl")->value(),7);
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_5"),Qt::LeftButton);
+        overlay->close();
+        QCOMPARE(settings.allKeys(),before);
+    }
+    void colorSlidersReachWhiteBlackAndGroupUndo() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_3"),Qt::LeftButton);
+        overlay->applyChosenColor(QColor("#ff0000"));
+        selectArea(overlay,QPoint(50,80),QPoint(300,100));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("colorButton"),Qt::LeftButton);
+        QTest::mouseClick(overlay->findChild<QToolButton *>("advancedColorButton"),Qt::LeftButton);
+        auto *saturation=overlay->findChild<QSlider *>("saturationControl"); QVERIFY(saturation);
+        auto *value=overlay->findChild<QSlider *>("valueControl"); QVERIFY(value);
+        const int depth=overlay->undoDepth();
+        QTest::mousePress(saturation,Qt::LeftButton,Qt::NoModifier,QPoint(sliderHandleCenterX(saturation),saturation->height()/2));
+        QTest::mouseMove(saturation,QPoint(saturation->width()/2,saturation->height()/2));
+        QTest::mouseMove(saturation,QPoint(7,saturation->height()/2));
+        QTest::mouseRelease(saturation,Qt::LeftButton,Qt::NoModifier,QPoint(7,saturation->height()/2));
+        QCOMPARE(saturation->value(),0);
+        QCOMPARE(overlay->annotations().first().color.name(),QStringLiteral("#ffffff"));
+        QCOMPARE(overlay->undoDepth(),depth+1);
+        QTest::mouseClick(overlay->findChild<QToolButton *>("undoButton"),Qt::LeftButton);
+        QCOMPARE(overlay->annotations().first().color.name(),QStringLiteral("#ff0000"));
+        QTest::mousePress(value,Qt::LeftButton,Qt::NoModifier,QPoint(sliderHandleCenterX(value),value->height()/2));
+        QTest::mouseRelease(value,Qt::LeftButton,Qt::NoModifier,QPoint(7,value->height()/2));
+        QCOMPARE(value->value(),0); QCOMPARE(overlay->annotations().first().color.name(),QStringLiteral("#000000"));
+        auto *preview=overlay->findChild<QToolButton *>("colorPreview"); QVERIFY(preview);
+        QCOMPARE(preview->text(),QStringLiteral("#000000"));
+    }
+    void everyStyleSliderHasVisibleReachableEndpoints() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        for (const auto &entry : {qMakePair("tool_3","widthControl"),qMakePair("tool_5","fontControl"),qMakePair("tool_5","fontWeightControl")}) {
+            if (!overlay->findChild<QToolButton *>(entry.first)->isChecked()) QTest::mouseClick(overlay->findChild<QToolButton *>(entry.first),Qt::LeftButton);
+            auto *slider=overlay->findChild<QSlider *>(entry.second); QVERIFY(slider); QVERIFY(slider->isVisible());
+            for (const int target : {slider->minimum(),slider->maximum()}) {
+                slider->setValue(target);
+                const int x=sliderHandleCenterX(slider);
+                QVERIFY(x-7>=0); QVERIFY(x+7<slider->width());
+                QTest::mousePress(slider,Qt::LeftButton,Qt::NoModifier,QPoint(x,slider->height()/2));
+                QTest::mouseRelease(slider,Qt::LeftButton,Qt::NoModifier,QPoint(x,slider->height()/2));
+                QCOMPARE(slider->value(),target);
+            }
+        }
     }
     void releasePositionAndCopy() {
         QImage copied; int writes=0;
@@ -560,7 +646,8 @@ private slots:
         auto *preset=overlay->findChild<QToolButton *>("preset_1"); QVERIFY(preset);   // #ff6b6b
         preset->click();
         // 预设色写入设置：颜色以十六进制字符串存放，跨后端行为一致。
-        QCOMPARE(QSettings().value("annotation/color").toString(),QStringLiteral("#ff6b6b"));
+        QTest::qWait(450);
+        QCOMPARE(QSettings().value("annotation/tools/rectangle/color").toString(),QStringLiteral("#ff6b6b"));
         // 工具栏色块按钮的图标随之更新
         QVERIFY(colorButton->icon().cacheKey()!=before);
         QTest::keyClick(overlay,Qt::Key_Escape);
@@ -597,7 +684,8 @@ private slots:
         QVERIFY(recent->isEnabled());
         // 点最近使用的第一个色块能取回刚才的颜色。
         recent->click();
-        QCOMPARE(QSettings().value("annotation/color").toString(),QStringLiteral("#00b050"));
+        QTest::qWait(450);
+        QCOMPARE(QSettings().value("annotation/tools/rectangle/color").toString(),QStringLiteral("#00b050"));
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
     void overlayCoversWholeVirtualDesktop() {

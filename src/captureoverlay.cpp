@@ -67,26 +67,17 @@ protected:
         int handleRadius;
     };
     SliderGeometry geometry() const {
-        QStyleOptionSlider option; initStyleOption(&option);
-        const int handleRadius=7;
-        QRect groove=style()->subControlRect(QStyle::CC_Slider,&option,QStyle::SC_SliderGroove,this);
-        if (groove.width()<=0) groove=QRect(handleRadius,0,qMax(1,width()-2*handleRadius),1);
-        // 手柄长度固定：几何完全自洽，也不依赖各平台 style 的像素度量枚举。
-        const int handleLength=2*handleRadius;
-        const int span=qMax(1,groove.width());
-        // sliderPositionFromValue(min, max, value, span, offset)：offset 必须是 0，
-        // 传错会让手柄整体偏移一整个轨道长度，看上去「拖不动」。
-        const int position=QStyle::sliderPositionFromValue(minimum(),maximum(),value(),span,0);
-        return SliderGeometry{groove,handleLength,groove.left()+position+handleLength/2,handleRadius};
+        const int radius=7;
+        const int span=qMax(1,width()-1-2*radius);
+        const QRect groove(radius,0,span+1,1);
+        const int position=QStyle::sliderPositionFromValue(minimum(),maximum(),value(),span);
+        return {groove,2*radius,groove.left()+position,radius};
     }
-    // x 坐标 → 取值：按浮点比例算，没有整数除法造成的台阶。
-    // 换算与 QSlider 内部一致：轨道位置 = 鼠标 x - 手柄半径 - 轨道左边界。
     int valueAtX(int x) const {
         const SliderGeometry geo=geometry();
-        if (maximum()<=minimum()) return minimum();
-        const qreal span=qMax(1,geo.groove.width());
-        const qreal pos=qBound(qreal(0),qreal(x-geo.handleLength/2-geo.groove.left()),span);
-        return minimum()+qRound(pos/span*(maximum()-minimum()));
+        const int span=qMax(1,geo.groove.width()-1);
+        const qreal position=qBound(0.0,qreal(x-geo.groove.left())/span,1.0);
+        return minimum()+qRound(position*(maximum()-minimum()));
     }
     // 鼠标交互自己算值：QSlider 默认按下时会跳到点击位置，而绘制、命中、取值
     // 分别用各自的坐标，换算不一致时就会「按住了却自己动了」。
@@ -96,23 +87,34 @@ protected:
         m_dragging=true;
         // 先发 sliderPressed 再改值：业务在按下时开启编辑会话，
         // 值变化落在会话内，拖一次只产生一步撤销。
-        emit sliderPressed();
+        setFocus(Qt::MouseFocusReason);
+        setSliderDown(true);
         const SliderGeometry geo=geometry();
-        if (qAbs(event->pos().x()-geo.handleCenter)>geo.handleRadius) setValue(valueAtX(event->pos().x()));
+        const bool onHandle=qAbs(event->position().x()-geo.handleCenter)<=geo.handleRadius;
+        m_grabOffset=onHandle ? qRound(event->position().x())-geo.handleCenter : 0;
+        if (!onHandle) setValue(valueAtX(qRound(event->position().x())));
         event->accept();
     }
     void mouseMoveEvent(QMouseEvent *event) override {
         if (!m_dragging) { QSlider::mouseMoveEvent(event); return; }
-        setValue(valueAtX(event->pos().x()));
+        setValue(valueAtX(qRound(event->position().x())-m_grabOffset));
         event->accept();
     }
     void mouseReleaseEvent(QMouseEvent *event) override {
         if (m_dragging && event->button()==Qt::LeftButton) {
+            setValue(valueAtX(qRound(event->position().x())-m_grabOffset));
             m_dragging=false;
-            emit sliderReleased();
+            setSliderDown(false);
             event->accept(); return;
         }
         QSlider::mouseReleaseEvent(event);
+    }
+    bool event(QEvent *event) override {
+        if (m_dragging && (event->type()==QEvent::UngrabMouse || event->type()==QEvent::Hide || event->type()==QEvent::WindowDeactivate)) {
+            m_dragging=false;
+            setSliderDown(false);
+        }
+        return QSlider::event(event);
     }
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
@@ -124,7 +126,7 @@ protected:
         const SliderGeometry geo=geometry();
         const int grooveHeight=4;
         const QRect groove(geo.groove.left(),(height()-grooveHeight)/2,geo.groove.width(),grooveHeight);
-        const int span=qMax(1,groove.width());
+        const int span=qMax(1,groove.width()-1);
         // 轨道
         p.setPen(QPen(QColor("#9aa0a6"),1));
         p.setBrush(m_hasGradient ? QBrush(m_gradient) : QBrush(QColor("#dfe1e5")));
@@ -151,6 +153,7 @@ protected:
 private:
     QLinearGradient m_gradient;
     bool m_hasGradient=false;
+    int m_grabOffset=0;
     bool m_dragging=false;   // 自己接管鼠标拖动，避免与 QSlider 内部状态打架
 };
 // 参数面板里的一行：名称 + 自绘滑块 + 紧贴滑块右端的数值。
@@ -179,7 +182,8 @@ QVector<QColor> presetColors() {
         "#00c7be","#5be0d8","#008f88",
         "#0a84ff","#66b3ff","#0060cc",
         "#bf5af2","#d79bff","#8a2fc4",
-        "#ff2d55","#ff7a95","#cc0f36"
+        "#ff2d55","#ff7a95","#cc0f36",
+        "#000000","#ffffff","#808080","#404040"
     };
     QVector<QColor> result;
     for (const char *name : names) result.append(QColor(QString::fromLatin1(name)));
@@ -264,7 +268,17 @@ CaptureOverlay::CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWrit
     m_lineWidth = settings.value("annotation/width", 3).toInt();
     m_fontSize = settings.value("annotation/fontSize", 18).toInt();
     m_fontWeight = qBound(100,settings.value("annotation/fontWeight", 400).toInt(),900);
+    for (int i=0;i<int(m_toolStyles.size());++i) {
+        const QString prefix=QStringLiteral("annotation/tools/%1/").arg(toolSettingsKey(static_cast<Tool>(i)));
+        ToolStyle &style=m_toolStyles[i];
+        style.color=colorFromSettings(settings.value(prefix+QStringLiteral("color")),m_color);
+        style.width=qBound(1,settings.value(prefix+QStringLiteral("width"),m_lineWidth).toInt(),20);
+        style.fontSize=qBound(10,settings.value(prefix+QStringLiteral("fontSize"),m_fontSize).toInt(),72);
+        const int weight=settings.value(prefix+QStringLiteral("fontWeight"),m_fontWeight).toInt();
+        style.fontWeight=qBound(100,((weight+50)/100)*100,900);
+    }
     buildToolbar();
+    loadToolStyle();
     // 滑块拖动时每变化一格就写一次设置（Windows 是同步写注册表），会明显卡顿。
     // 改为停止变化 400ms 后统一落盘；覆盖层关闭时也会补写一次。
     m_settingsSaveTimer.setSingleShot(true);
@@ -359,7 +373,7 @@ void CaptureOverlay::buildToolbar() {
     buildStylePanel(); layout->addWidget(m_stylePanel);
     buildColorPanel();
     connect(m_widthControl, &QSlider::valueChanged, this, [this](int n) {
-        m_lineWidth=n; m_settingsSaveTimer.start();
+        m_lineWidth=n; m_toolStyles[int(styleTool())].width=n; markStyleDirty();
         if (m_textEditor) {
             applyEditorTextStyle();
         } else if (selectedIndex()>=0 && selectedIndex()<m_document.items().size() && m_document.items()[selectedIndex()].tool!=Tool::Text) {
@@ -368,7 +382,7 @@ void CaptureOverlay::buildToolbar() {
         }
     });
     connect(m_fontControl, &QSlider::valueChanged, this, [this](int n) {
-        m_fontSize=n; m_settingsSaveTimer.start();
+        m_fontSize=n; m_toolStyles[int(styleTool())].fontSize=n; markStyleDirty();
         if (m_textEditor) {
             applyEditorTextStyle(); resizeTextEditor();
         } else if (selectedIndex()>=0 && selectedIndex()<m_document.items().size() && m_document.items()[selectedIndex()].tool==Tool::Text) {
@@ -379,7 +393,7 @@ void CaptureOverlay::buildToolbar() {
     connect(m_fontWeightControl, &QSlider::valueChanged, this, [this](int n) {
         const int snapped=qBound(100,((n+50)/100)*100,900);
         if (n!=snapped) { m_fontWeightControl->setValue(snapped); return; }
-        m_fontWeight=n; m_settingsSaveTimer.start();
+        m_fontWeight=n; m_toolStyles[int(styleTool())].fontWeight=n; markStyleDirty();
         if (m_textEditor) {
             applyEditorTextStyle(); resizeTextEditor();
         } else if (selectedIndex()>=0 && selectedIndex()<m_document.items().size() && m_document.items()[selectedIndex()].tool==Tool::Text) {
@@ -471,31 +485,33 @@ void CaptureOverlay::buildColorPanel() {
     }
     layout->addLayout(grid);
 
+    auto *advancedButton=new QToolButton(m_colorPanel);
+    advancedButton->setObjectName("advancedColorButton"); advancedButton->setText(QStringLiteral("更多颜色"));
+    advancedButton->setCheckable(true); layout->addWidget(advancedButton);
+    m_colorAdvanced=new QFrame(m_colorPanel); m_colorAdvanced->setObjectName("advancedColors");
+    auto *advancedLayout=new QVBoxLayout(m_colorAdvanced); advancedLayout->setContentsMargins(0,0,0,0);
     auto *hueRow=new QHBoxLayout;
-    auto *hueName=new QLabel(QStringLiteral("色相"));
-    m_hueControl=new StyledSlider; m_hueControl->setRange(0,360); m_hueControl->setValue(0);
-    m_hueControl->setObjectName("hueControl"); m_hueControl->setAccessibleName(QStringLiteral("色相"));
+    m_hueControl=addStyledSlider(hueRow,QStringLiteral("色相"),0,359,0,&m_hueValue);
+    m_hueControl->setObjectName("hueControl"); advancedLayout->addLayout(hueRow);
     QLinearGradient hue; hue.setCoordinateMode(QGradient::ObjectBoundingMode);
-    hue.setColorAt(0.00,QColor("#ff0000")); hue.setColorAt(0.17,QColor("#ffff00"));
-    hue.setColorAt(0.33,QColor("#00ff00")); hue.setColorAt(0.50,QColor("#00ffff"));
-    hue.setColorAt(0.67,QColor("#0000ff")); hue.setColorAt(0.83,QColor("#ff00ff"));
-    hue.setColorAt(1.00,QColor("#ff0000"));
+    hue.setColorAt(0.0,QColor("#ff0000")); hue.setColorAt(0.17,QColor("#ffff00"));
+    hue.setColorAt(0.33,QColor("#00ff00")); hue.setColorAt(0.5,QColor("#00ffff"));
+    hue.setColorAt(0.67,QColor("#0000ff")); hue.setColorAt(0.83,QColor("#ff00ff")); hue.setColorAt(1.0,QColor("#ff0000"));
     setSliderGradient(m_hueControl,hue);
-    hueRow->addWidget(hueName); hueRow->addWidget(m_hueControl,1);
-    layout->addLayout(hueRow);
-
+    auto *saturationRow=new QHBoxLayout;
+    m_saturationControl=addStyledSlider(saturationRow,QStringLiteral("饱和度"),0,100,100,&m_saturationValue);
+    m_saturationControl->setObjectName("saturationControl"); advancedLayout->addLayout(saturationRow);
     auto *valueRow=new QHBoxLayout;
-    auto *valueName=new QLabel(QStringLiteral("明度"));
-    m_valueControl=new StyledSlider; m_valueControl->setRange(0,100); m_valueControl->setValue(100);
-    m_valueControl->setObjectName("valueControl"); m_valueControl->setAccessibleName(QStringLiteral("明度"));
-    valueRow->addWidget(valueName); valueRow->addWidget(m_valueControl,1);
-    layout->addLayout(valueRow);
-
-    m_colorPreview=new QToolButton(m_colorPanel);
-    m_colorPreview->setObjectName("colorPreview");
-    m_colorPreview->setFixedHeight(24);
-    m_colorPreview->setToolTip(QStringLiteral("使用当前颜色"));
-    m_colorPreview->setAccessibleName(QStringLiteral("颜色预览"));
+    m_valueControl=addStyledSlider(valueRow,QStringLiteral("明度"),0,100,100,&m_valueValue);
+    m_valueControl->setObjectName("valueControl"); advancedLayout->addLayout(valueRow);
+    layout->addWidget(m_colorAdvanced); m_colorAdvanced->hide();
+    connect(advancedButton,&QToolButton::toggled,this,[this](bool visible) {
+        m_colorAdvanced->setVisible(visible);
+        const QPoint anchor=m_colorButton->mapTo(this,QPoint(m_colorButton->width()/2,m_colorButton->height()));
+        positionPanel(m_colorPanel,anchor,false);
+    });
+    m_colorPreview=new QToolButton(m_colorPanel); m_colorPreview->setObjectName("colorPreview");
+    m_colorPreview->setFixedHeight(24); m_colorPreview->setAccessibleName(QStringLiteral("当前颜色值"));
     layout->addWidget(m_colorPreview);
 
     auto *recent=new QHBoxLayout; recent->setSpacing(4);
@@ -508,42 +524,55 @@ void CaptureOverlay::buildColorPanel() {
     }
     layout->addLayout(recent);
 
-    connect(m_hueControl,&QSlider::valueChanged,this,[this](int) { updateColorPreview(); });
-    connect(m_valueControl,&QSlider::valueChanged,this,[this](int) { updateColorPreview(); });
-    connect(m_hueControl,&QSlider::sliderReleased,this,[this] { applyChosenColor(previewColor()); });
-    connect(m_valueControl,&QSlider::sliderReleased,this,[this] { applyChosenColor(previewColor()); });
-    connect(m_colorPreview,&QToolButton::clicked,this,[this] { applyChosenColor(previewColor()); });
-
-    updateColorPreview();
+    for (QSlider *slider : {m_hueControl,m_saturationControl,m_valueControl}) {
+        connect(slider,&QSlider::sliderPressed,this,[this] {
+            if (!m_textEditor && selectedIndex()>=0) m_document.beginEdit();
+        });
+        connect(slider,&QSlider::valueChanged,this,[this] { applyColor(previewColor(),false); });
+        connect(slider,&QSlider::sliderReleased,this,[this] { commitStyleEdit(); rememberColor(m_color); });
+    }
+    syncColorControls();
     updateRecentButtons();
     updatePresetHighlight();
     m_colorPanel->hide();
 }
 void CaptureOverlay::toggleColorPanel() {
     if (m_colorPanel->isVisible()) { hidePanels(); return; }
+    syncColorControls();
     m_colorPanel->show();
-    updateColorPreview();
     updateRecentButtons();
     updatePresetHighlight();
     const QPoint anchor=m_colorButton->mapTo(this,QPoint(m_colorButton->width()/2,m_colorButton->height()));
     positionPanel(m_colorPanel,anchor,false);
 }
 QColor CaptureOverlay::previewColor() const {
-    const int h=m_hueControl ? m_hueControl->value() : 0;
-    const int v=m_valueControl ? m_valueControl->value() : 100;
-    return QColor::fromHsvF(qBound(0,h,360)/360.0, 1.0, qBound(0,v,100)/100.0);
+    return QColor::fromHsv(m_hueControl->value(),qRound(m_saturationControl->value()*2.55),qRound(m_valueControl->value()*2.55));
+}
+void CaptureOverlay::syncColorControls() {
+    if (!m_hueControl) return;
+    const QSignalBlocker hue(m_hueControl),saturation(m_saturationControl),value(m_valueControl);
+    if (m_color.hsvHue()>=0) m_hueControl->setValue(m_color.hsvHue());
+    m_saturationControl->setValue(qRound(m_color.hsvSaturationF()*100));
+    m_valueControl->setValue(qRound(m_color.valueF()*100));
+    m_hueValue->setText(QString::number(m_hueControl->value()));
+    m_saturationValue->setText(QString::number(m_saturationControl->value()));
+    m_valueValue->setText(QString::number(m_valueControl->value()));
+    updateColorPreview();
 }
 void CaptureOverlay::updateColorPreview() {
     if (!m_colorPreview) return;
-    const QColor color=previewColor();
-    m_colorPreview->setStyleSheet(QStringLiteral("QToolButton#colorPreview{background:%1;border:1px solid #999;border-radius:3px;}").arg(color.name()));
-    if (m_valueControl && m_hueControl) {
-        // 明度条：白 → 当前色相的纯色。
-        QLinearGradient gradient; gradient.setCoordinateMode(QGradient::ObjectBoundingMode);
-        gradient.setColorAt(0.0,QColor(Qt::white));
-        gradient.setColorAt(1.0,QColor::fromHsvF(m_hueControl->value()/360.0,1.0,1.0));
-        setSliderGradient(m_valueControl,gradient);
-    }
+    m_colorPreview->setText(m_color.name().toUpper());
+    m_colorPreview->setStyleSheet(QStringLiteral("QToolButton#colorPreview{background:%1;color:%2;border:1px solid #999;border-radius:3px;}")
+                                .arg(m_color.name(),m_color.lightness()<130?QStringLiteral("white"):QStringLiteral("black")));
+    const int hue=m_hueControl->value();
+    const qreal saturation=m_saturationControl->value()/100.0,value=m_valueControl->value()/100.0;
+    QLinearGradient saturationGradient; saturationGradient.setCoordinateMode(QGradient::ObjectBoundingMode);
+    saturationGradient.setColorAt(0,QColor::fromHsvF(hue/360.0,0,value));
+    saturationGradient.setColorAt(1,QColor::fromHsvF(hue/360.0,1,value));
+    setSliderGradient(m_saturationControl,saturationGradient);
+    QLinearGradient valueGradient; valueGradient.setCoordinateMode(QGradient::ObjectBoundingMode);
+    valueGradient.setColorAt(0,Qt::black); valueGradient.setColorAt(1,QColor::fromHsvF(hue/360.0,saturation,1));
+    setSliderGradient(m_valueControl,valueGradient);
 }
 QVector<QColor> CaptureOverlay::recentColors() const {
     QVector<QColor> result;
@@ -604,7 +633,9 @@ QRect CaptureOverlay::uiScreenBounds() const {
 void CaptureOverlay::positionPanel(QFrame *panel, const QPoint &anchor, bool preferAbove) {
     const QRect host=uiScreenBounds();
     if (host.isEmpty()) return;
-    const QSize wanted(qMin(280,qMax(1,host.width()-16)),280);
+    auto *scroll=panel->findChild<QScrollArea *>("colorScroll");
+    const int requestedHeight=scroll ? scroll->widget()->sizeHint().height()+4 : panel->sizeHint().height();
+    const QSize wanted(qMin(300,qMax(1,host.width()-16)),requestedHeight);
     const QRect placed=popupPlacement(wanted,m_toolbar->geometry(),anchor,host,preferAbove);
     panel->setGeometry(placed); panel->raise();
 }
@@ -614,18 +645,18 @@ void CaptureOverlay::updateColorSwatch() {
     p.setRenderHint(QPainter::Antialiasing); p.setPen(QPen(QColor("#666666"),1)); p.setBrush(m_color); p.drawEllipse(QRectF(3,3,14,14));
     m_colorButton->setIcon(QIcon(swatch)); m_colorButton->setIconSize(QSize(20,20));
 }
-void CaptureOverlay::applyChosenColor(const QColor &color) {
-    if (!color.isValid()) return;
-    m_color=color; QSettings().setValue("annotation/color",color.name()); updateColorSwatch();
+void CaptureOverlay::applyChosenColor(const QColor &color) { applyColor(color,true); }
+void CaptureOverlay::applyColor(const QColor &color, bool commitRecent) {
+    if (!color.isValid() || styleTool()==Tool::Mosaic) return;
+    m_color=color; m_toolStyles[int(styleTool())].color=color; markStyleDirty(); updateColorSwatch();
     if (m_textEditor) {
-        // 显式改色才更新正在编辑的文字颜色，颜色与预览始终保持一致。
-        m_textColor=color;
-        m_textEditor->setStyleSheet(QStringLiteral("QTextEdit{border:0;background:rgba(255,255,255,210);color:%1;}").arg(color.name()));
-        applyEditorTextStyle();
-    } else if (selectedIndex()>=0 && selectedIndex()<m_document.items().size()) {
-        const int i=selectedIndex(); auto item=m_document.items()[i]; item.color=color; m_document.replace(i,item); selectObject(i); update();
+        m_textColor=color; applyEditorTextStyle();
+    } else if (selectedIndex()>=0) {
+        const int index=selectedIndex(); auto item=m_document.items()[index]; item.color=color;
+        applyStyleChange(index,item);
     }
-    rememberColor(color);
+    if (commitRecent) { commitStyleEdit(); rememberColor(color); syncColorControls(); }
+    else updateColorPreview();
     updatePresetHighlight();
 }
 void CaptureOverlay::positionToolbar() {
@@ -657,7 +688,7 @@ void CaptureOverlay::selectObject(int index) {
 }
 void CaptureOverlay::syncSelectedStyle() {
     const int index=selectedIndex();
-    if (index<0) { updateStylePanel(); return; }
+    if (index<0) { loadToolStyle(); return; }
     const Annotation &item=m_document.items()[index];
     const QSignalBlocker widthBlock(m_widthControl),fontBlock(m_fontControl),weightBlock(m_fontWeightControl);
     m_color=item.color;
@@ -670,7 +701,7 @@ void CaptureOverlay::syncSelectedStyle() {
         m_lineWidth=qRound(item.width); m_widthControl->setValue(m_lineWidth);
         m_widthValue->setText(QString::number(m_lineWidth));
     }
-    updateStylePanel();
+    syncColorControls(); updateStylePanel();
 }
 void CaptureOverlay::applyStyleChange(int index, const Annotation &item) {
     // 拖动中（会话已开启）就地修改，释放时统一提交为一步撤销；
@@ -694,14 +725,44 @@ void CaptureOverlay::commitStyleEdit() {
     m_selectedId = selected;
     update();
 }
-void CaptureOverlay::saveStyleSettings() {
-    m_persistedWidth=m_lineWidth;
-    QSettings settings;
-    settings.setValue("annotation/width",m_lineWidth);
-    settings.setValue("annotation/fontSize",m_fontSize);
-    settings.setValue("annotation/fontWeight",m_fontWeight);
+Tool CaptureOverlay::styleTool() const {
+    if (m_textEditor) return Tool::Text;
+    if (selectedIndex()>=0) return m_document.items()[selectedIndex()].tool;
+    return m_tool==Tool::Select ? m_lastDrawingTool : m_tool;
 }
-void CaptureOverlay::setTool(Tool tool) { m_tool=tool; m_selectedId=0; setCursor(tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor); update(); }
+void CaptureOverlay::markStyleDirty() {
+    m_styleDirty[int(styleTool())]=true;
+    m_settingsSaveTimer.start();
+}
+void CaptureOverlay::loadToolStyle() {
+    const ToolStyle &style=m_toolStyles[int(styleTool())];
+    const QSignalBlocker width(m_widthControl),font(m_fontControl),weight(m_fontWeightControl);
+    m_color=style.color; m_lineWidth=style.width; m_fontSize=style.fontSize; m_fontWeight=style.fontWeight;
+    m_widthControl->setValue(m_lineWidth); m_fontControl->setValue(m_fontSize); m_fontWeightControl->setValue(m_fontWeight);
+    m_widthValue->setText(QString::number(m_lineWidth)); m_fontValue->setText(QString::number(m_fontSize));
+    m_fontWeightValue->setText(QString::number(m_fontWeight));
+    updateColorSwatch(); syncColorControls(); updateStylePanel();
+}
+void CaptureOverlay::saveStyleSettings() {
+    QSettings settings;
+    for (int i=0;i<int(m_toolStyles.size());++i) {
+        if (!m_styleDirty[i]) continue;
+        const ToolStyle &style=m_toolStyles[i];
+        const QString prefix=QStringLiteral("annotation/tools/%1/").arg(toolSettingsKey(static_cast<Tool>(i)));
+        settings.setValue(prefix+QStringLiteral("color"),style.color.name());
+        settings.setValue(prefix+QStringLiteral("width"),style.width);
+        settings.setValue(prefix+QStringLiteral("fontSize"),style.fontSize);
+        settings.setValue(prefix+QStringLiteral("fontWeight"),style.fontWeight);
+        m_styleDirty[i]=false;
+    }
+    m_persistedWidth=m_toolStyles[int(styleTool())].width;
+}
+void CaptureOverlay::setTool(Tool tool) {
+    m_tool=tool; m_selectedId=0;
+    if (tool!=Tool::Select) m_lastDrawingTool=tool;
+    loadToolStyle();
+    setCursor(tool==Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor); update();
+}
 QPointF CaptureOverlay::boundedPoint(const QPointF &p) const { return {qBound(0.0,p.x(),double(width())), qBound(0.0,p.y(),double(height()))}; }
 QRectF CaptureOverlay::windowAt(const QPointF &p) const {
     // 窗口矩形是虚拟桌面逻辑坐标，比较前先换算到覆盖层局部坐标。
@@ -837,6 +898,7 @@ void CaptureOverlay::clearSelection() {
     m_selection = {};
     m_selectedId = 0;
     m_hoverWindow = {};
+    loadToolStyle();
     m_toolbar->hide();
     hidePanels();
     m_drag=Drag::None; m_hasPreview=false;
@@ -865,16 +927,8 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
         if (m_handle>=0) { m_selectedId=0; m_startRect=m_selection; m_drag=Drag::ResizeSelection; update(); return; }
         const int object=objectAt(m_press);
         if (object>=0) {
-            selectObject(object); m_startAnnotation=m_document.items()[object]; m_color=m_startAnnotation.color; updateColorSwatch();
-            const QSignalBlocker b1(m_widthControl), b2(m_fontControl), b3(m_fontWeightControl);
-            if (m_startAnnotation.tool==Tool::Text) {
-                m_fontSize=m_startAnnotation.fontSize; m_fontWeight=m_startAnnotation.fontWeight;
-                m_fontControl->setValue(m_fontSize); m_fontWeightControl->setValue(m_fontWeight);
-                m_fontValue->setText(QString::number(m_fontSize)); m_fontWeightValue->setText(QString::number(m_fontWeight));
-            } else {
-                m_lineWidth=qRound(m_startAnnotation.width); m_widthControl->setValue(m_lineWidth);
-                m_widthValue->setText(QString::number(m_lineWidth));
-            }
+            selectObject(object); m_startAnnotation=m_document.items()[object];
+            syncSelectedStyle();
             m_parametersExpanded=true; updateStylePanel(); positionToolbar();
             m_drag=Drag::MoveObject; update(); return;
         }
@@ -883,7 +937,7 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
         else { clearSelection(); m_drag=Drag::NewSelection; }
     } else if (m_selection.contains(m_press)) {
         if (m_tool==Tool::Text) { startText(m_press); return; }
-        m_selectedId=0; m_drag=Drag::Draw; m_preview={}; m_preview.tool=m_tool; m_preview.color=m_color; m_preview.width=m_lineWidth;
+        m_selectedId=0; loadToolStyle(); m_drag=Drag::Draw; m_preview={}; m_preview.tool=m_tool; m_preview.color=m_color; m_preview.width=m_lineWidth;
         m_preview.fontSize=m_fontSize; m_preview.rect=QRectF(m_press,m_press); if (m_tool==Tool::Pen) m_preview.points.append(m_press);
         m_hasPreview=true;
     }

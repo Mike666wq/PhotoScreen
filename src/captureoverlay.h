@@ -5,7 +5,9 @@
 #include <QWidget>
 #include <functional>
 
+class QBoxLayout;
 class QButtonGroup;
+class QGridLayout;
 class QFrame;
 class QLabel;
 class QSlider;
@@ -62,7 +64,8 @@ private:
     void ensureRenderCache();
     void buildStylePanel();
     void buildColorPanel();
-    void toggleStylePanel();
+    void updateStylePanel();
+    QRect uiScreenBounds() const;
     void toggleColorPanel();
     void hidePanels();
     bool panelVisible() const;
@@ -149,8 +152,13 @@ private:
     QLabel *m_widthValue = nullptr;
     QLabel *m_fontValue = nullptr;
     QLabel *m_fontWeightValue = nullptr;
-    QToolButton *m_widthButton = nullptr;
-    QToolButton *m_fontButton = nullptr;
+    QBoxLayout *m_primaryLayout = nullptr;
+    QGridLayout *m_toolLayout = nullptr;
+    QWidget *m_toolArea = nullptr;
+    QVector<QToolButton *> m_toolButtons;
+    QLabel *m_toolTitle = nullptr;
+    bool m_parametersExpanded = false;
+    QPointF m_toolbarAnchor;
     QTextEdit *m_textEditor = nullptr;
     QPointF m_textAnchor;
     AnnotationId m_editingTextId = 0;

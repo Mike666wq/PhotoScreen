@@ -230,7 +230,8 @@ private slots:
         // 原有用例都只 setValue()，从未走过真实鼠标命中路径，所以没能挡住这个回归。
         auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
         overlay->show(); QCoreApplication::processEvents();
-        overlay->findChild<QToolButton *>("widthButton")->click();      // 打开样式面板
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();
         QCoreApplication::processEvents();
         auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
         QVERIFY(width->isVisible());
@@ -256,7 +257,8 @@ private slots:
         // 用对象自己的观察接口断言，不依赖全局 QSettings 状态，避免用例之间互相污染。
         auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
         overlay->show(); QCoreApplication::processEvents();
-        overlay->findChild<QToolButton *>("widthButton")->click();
+        selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        overlay->findChild<QToolButton *>("tool_3")->click();
         auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
         QCOMPARE(overlay->persistedLineWidth(),0);      // 还没落盘过
         const int target=width->value()==8?7:8;         // 必须与当前值不同，才会触发 valueChanged
@@ -440,7 +442,7 @@ private slots:
         selectArea(overlay,QPoint(10,10),QPoint(510,400));
         auto *panel=overlay->findChild<QFrame *>("stylePanel"); QVERIFY(panel);
         QVERIFY(!panel->isVisible());
-        auto *width=overlay->findChild<QToolButton *>("widthButton"); QVERIFY(width);
+        auto *width=overlay->findChild<QToolButton *>("tool_3"); QVERIFY(width);
         width->click();
         QVERIFY(panel->isVisible());
         // 再点一次收起。
@@ -455,24 +457,40 @@ private slots:
         QVERIFY(overlay->findChild<QLabel *>("fontWeightValue"));
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
-    void stylePanelNeverCoversToolbar() {
+    void stylePanelIsInsideToolbarWithoutCoveringActions() {
         auto *overlay=new CaptureOverlay(frame(320,260),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
-        overlay->show(); QCoreApplication::processEvents();
-        selectArea(overlay,QPoint(10,10),QPoint(300,220));
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(300,220));
         auto *panel=overlay->findChild<QFrame *>("stylePanel"); QVERIFY(panel);
         auto *toolbar=overlay->findChild<QFrame *>("captureToolbar"); QVERIFY(toolbar);
-        overlay->findChild<QToolButton *>("widthButton")->click();
-        QVERIFY(panel->isVisible());
-        QVERIFY2(!panel->geometry().intersects(toolbar->geometry()),
-                 qPrintable(QStringLiteral("面板 %1,%2 %3×%4 工具栏 %5,%6 %7×%8")
-                            .arg(panel->geometry().x()).arg(panel->geometry().y())
-                            .arg(panel->width()).arg(panel->height())
-                            .arg(toolbar->geometry().x()).arg(toolbar->geometry().y())
-                            .arg(toolbar->width()).arg(toolbar->height())));
-        // 完成与取消按钮仍然可点，参数面板不能压住它们。
-        QVERIFY(overlay->findChild<QToolButton *>("doneButton")->isVisible());
-        QVERIFY(overlay->findChild<QToolButton *>("cancelButton")->isVisible());
-        QTest::keyClick(overlay,Qt::Key_Escape);
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_5"),Qt::LeftButton);
+        QCoreApplication::processEvents();
+        QVERIFY(panel->isVisible()); QVERIFY(overlay->rect().contains(toolbar->geometry()));
+        const QRect panelRect(panel->mapTo(overlay,QPoint()),panel->size());
+        QVERIFY(toolbar->geometry().contains(panelRect));
+        for (const char *name : {"doneButton","cancelButton"}) {
+            auto *button=overlay->findChild<QToolButton *>(name); QVERIFY(button); QVERIFY(button->isVisible());
+            const QRect buttonRect(button->mapTo(overlay,QPoint()),button->size());
+            QVERIFY(!buttonRect.intersects(panelRect)); QVERIFY(overlay->rect().contains(buttonRect));
+        }
+        QVERIFY(!overlay->findChild<QSlider *>("widthControl")->isVisible());
+        QVERIFY(overlay->findChild<QSlider *>("fontControl")->isVisible());
+        QVERIFY(overlay->findChild<QSlider *>("fontWeightControl")->isVisible());
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_6"),Qt::LeftButton);
+        QVERIFY(!panel->isVisible()); QVERIFY(!overlay->findChild<QToolButton *>("colorButton")->isEnabled());
+    }
+    void toolbarAndColorsStayOnAnActualScreen() {
+        ScreenFrame f=dualFrame();
+        f.screens[1].geometry=QRect(600,200,600,480); f.virtualGeometry=QRect(0,0,1200,680);
+        auto *overlay=new CaptureOverlay(f,QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(550,250),QPoint(760,340));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_3"),Qt::LeftButton);
+        QCoreApplication::processEvents();
+        auto *toolbar=overlay->findChild<QFrame *>("captureToolbar"); QVERIFY(toolbar);
+        const QRect screen(600,200,600,480);
+        QVERIFY(screen.contains(toolbar->geometry()));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("colorButton"),Qt::LeftButton);
+        auto *colors=overlay->findChild<QFrame *>("colorPanel"); QVERIFY(colors); QVERIFY(colors->isVisible());
+        QVERIFY(screen.contains(colors->geometry())); QVERIFY(!colors->geometry().intersects(toolbar->geometry()));
     }
     void stylePanelEscOnlyClosesPanel() {
         auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
@@ -480,7 +498,7 @@ private slots:
         overlay->show(); QCoreApplication::processEvents();
         selectArea(overlay,QPoint(10,10),QPoint(510,400));
         auto *panel=overlay->findChild<QFrame *>("stylePanel"); QVERIFY(panel);
-        overlay->findChild<QToolButton *>("widthButton")->click();
+        overlay->findChild<QToolButton *>("tool_3")->click();
         QVERIFY(panel->isVisible());
         // 面板打开时 Esc 只收起面板，截图继续。
         QTest::keyClick(overlay,Qt::Key_Escape);
@@ -500,8 +518,10 @@ private slots:
             auto *button=overlay->findChild<QToolButton *>(QStringLiteral("tool_%1").arg(i));
             QVERIFY(button);
             QCOMPARE(button->text(),expected.at(i));
-            // 图标 + 文字标签，箭头与画笔不再只能靠 tooltip 区分。
-            QVERIFY(button->toolButtonStyle()==Qt::ToolButtonTextUnderIcon);
+            QCOMPARE(button->accessibleName(),expected.at(i));
+            QVERIFY(button->toolTip().contains(expected.at(i)));
+            QCOMPARE(button->size(),QSize(32,32));
+            QVERIFY(button->toolButtonStyle()==Qt::ToolButtonIconOnly);
             QVERIFY(!button->icon().isNull());
         }
         auto *undo=overlay->findChild<QToolButton *>("undoButton"); QVERIFY(undo);

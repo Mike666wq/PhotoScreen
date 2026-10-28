@@ -1,5 +1,6 @@
 #include "core/annotation.h"
 #include "core/geometry.h"
+#include "core/interaction.h"
 #include <QPainter>
 #include <QTextBlock>
 #include <QTextDocument>
@@ -11,6 +12,30 @@ using namespace photo;
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void uiPlacementAvoidsScreenGaps() {
+        const QVector<QRect> screens={QRect(-600,0,600,480),QRect(0,200,600,480)};
+        QCOMPARE(interactionScreen(screens,QPointF(100,250),QRectF(-40,210,200,100)),screens[1]);
+        QCOMPARE(interactionScreen(screens,QPointF(100,100),QRectF(-400,20,200,100)),screens[0]);
+        for (const QRect &screen : screens) {
+            for (const QPoint &corner : {screen.topLeft(),screen.topRight(),screen.bottomLeft(),screen.bottomRight()}) {
+                const QRectF selection(corner,QSizeF(20,20));
+                const QRect toolbar=toolbarPlacement(QSize(460,120),selection,screen);
+                QVERIFY(screen.contains(toolbar));
+                const QRect colors=popupPlacement(QSize(280,280),toolbar,toolbar.center(),screen,false);
+                QVERIFY(screen.contains(colors)); QVERIFY(!colors.intersects(toolbar));
+                QVERIFY(screen.contains(fitInsideScreen(QRect(corner,QSize(146,144)),screen)));
+            }
+        }
+    }
+    void displayedOutputMetricsMatchRenderer() {
+        ScreenImage left; left.geometry=QRect(-100,0,100,100); left.image=QImage(150,150,QImage::Format_RGB32); left.image.fill(Qt::white);
+        ScreenImage right; right.geometry=QRect(0,0,100,100); right.image=QImage(200,200,QImage::Format_RGB32); right.image.fill(Qt::white);
+        const QVector<ScreenImage> screens={left,right};
+        for (const QRectF &selection : {QRectF(-90.5,10.5,20,30),QRectF(-10.5,10.5,30,20),QRectF(20.5,10.5,40,30)}) {
+            const SelectionMetrics metrics=selectionMetrics(screens,selection);
+            QCOMPARE(metrics.pixelSize,renderSelection(screens,selection,{}).size());
+        }
+    }
     void scaling_data() {
         QTest::addColumn<QSizeF>("logical"); QTest::addColumn<QSize>("pixels");
         QTest::addColumn<QRectF>("selection"); QTest::addColumn<QRect>("expected");

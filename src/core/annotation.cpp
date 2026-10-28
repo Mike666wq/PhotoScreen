@@ -264,6 +264,26 @@ QImage renderSelection(const QImage &source, const QSizeF &logicalSize, const QR
     }
     return out;
 }
+SelectionMetrics selectionMetrics(const QVector<ScreenImage> &screens, const QRectF &selection) {
+    SelectionMetrics metrics;
+    const ScreenImage *single=nullptr;
+    qreal sx=0,sy=0;
+    const QRectF sel=selection.normalized();
+    for (const auto &screen : screens) {
+        if (screen.isEmpty() || !QRectF(screen.geometry).intersects(sel)) continue;
+        ++metrics.screenCount; single=&screen;
+        sx=qMax(sx,screen.scaleX()); sy=qMax(sy,screen.scaleY());
+    }
+    if (!single) return metrics;
+    metrics.scaleX=sx; metrics.scaleY=sy;
+    if (metrics.screenCount==1) {
+        metrics.pixelSize=pixelRect(sel.translated(-single->geometry.topLeft()),single->geometry.size(),single->image.size()).size();
+    } else {
+        metrics.pixelSize=QSize(qCeil(sel.right()*sx)-qFloor(sel.left()*sx),
+                               qCeil(sel.bottom()*sy)-qFloor(sel.top()*sy));
+    }
+    return metrics;
+}
 QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &selection,
                        const QVector<Annotation> &annotations) {
     const QRectF sel = selection.normalized();
@@ -273,14 +293,13 @@ QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &select
     if (hits.isEmpty()) return {};
 
     // 输出比例取相交屏幕中的最大值，保证任何一屏都不被降采样。
-    qreal sx = 0, sy = 0;
-    for (const auto *s : hits) { sx = qMax(sx, s->scaleX()); sy = qMax(sy, s->scaleY()); }
+    const SelectionMetrics metrics=selectionMetrics(screens,sel);
+    const qreal sx=metrics.scaleX, sy=metrics.scaleY;
     if (sx <= 0 || sy <= 0) return {};
 
     // 选区在输出比例下的像素范围，取整规则与单屏实现一致。
     const int left = qFloor(sel.left()*sx), top = qFloor(sel.top()*sy);
-    const int right = qCeil(sel.right()*sx), bottom = qCeil(sel.bottom()*sy);
-    const QSize outSize(right-left, bottom-top);
+    const QSize outSize=metrics.pixelSize;
     if (outSize.isEmpty()) return {};
 
     if (hits.size() == 1) {

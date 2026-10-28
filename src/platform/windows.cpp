@@ -153,7 +153,7 @@ QImage captureDesktopWithGdi() {
         appendDiagnosticLog(QStringLiteral("GDI 兜底：CreateDIBSection 失败，错误 %1").arg(GetLastError()));
         if (dib) DeleteObject(dib); DeleteDC(memDC); DeleteDC(displayDC); return {};
     }
-    HBITMAP previous=SelectObject(memDC,dib);
+    HGDIOBJ previous=SelectObject(memDC,dib);
     const BOOL copied=BitBlt(memDC,0,0,width,height,displayDC,useScreenDc?0:x,useScreenDc?0:y,SRCCOPY|CAPTUREBLT);
     QImage result;
     if (copied) result=QImage(static_cast<const uchar *>(bits),width,height,width*4,QImage::Format_RGB32).copy();
@@ -181,7 +181,7 @@ bool captureOutput(IDXGIAdapter1 *adapter, const ComPtr<IDXGIOutput> &output, co
     QImage frame; bool gotFrame=false;
     for (int attempt=1;attempt<=3;++attempt) {
         // 首帧给足等待；重试只等 300ms，避免黑帧时白等数秒。
-        const UINT timeout=attempt==1?2500:300;
+        const UINT timeout=attempt==1?2500u:300u;
         DXGI_OUTDUPL_FRAME_INFO info{}; ComPtr<IDXGIResource> desktop;
         hr=duplication->AcquireNextFrame(timeout,&info,&desktop);
         if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("AcquireNextFrame"),hr)); break; }
@@ -421,8 +421,11 @@ void captureScreen(QScreen *screen, QObject *context, CaptureCallback callback) 
             .arg(t.deviceName).arg(t.logical.left()).arg(t.logical.top()).arg(t.logical.width()).arg(t.logical.height()).arg(t.ratio);
     appendDiagnosticLog(QStringLiteral("captureScreen：主线程屏快照 [%1]").arg(detail.join(QStringLiteral(" | "))));
     // DPI 感知级别：GDI 兜底只有在按物理像素工作（每显示器感知）时才对得上 DXGI 坐标。
+    // 这两个 API 需要较新的 SDK，旧 SDK 下用尺寸校验兜底即可。
+#if defined(NTDDI_VERSION) && defined(NTDDI_WIN10_RS2) && NTDDI_VERSION >= NTDDI_WIN10_RS2
     appendDiagnosticLog(QStringLiteral("进程 DPI 感知级别：%1（0=未感知 1=系统 2=每显示器）")
         .arg(int(GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()))));
+#endif
     QPointer<QObject> target(context);
     std::thread([target,callback,targets] {
         const qint64 started=QDateTime::currentMSecsSinceEpoch();

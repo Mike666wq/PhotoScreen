@@ -3,6 +3,7 @@
 #include <QAbstractNativeEventFilter>
 #include <QApplication>
 #include <QBuffer>
+#include <QColor>
 #include <QCoreApplication>
 #include <QCursor>
 #include <QDateTime>
@@ -92,8 +93,82 @@ bool matchScreen(const QVector<ScreenTarget> &targets, const QString &deviceName
     }
     return false;
 }
+// 采样统计：平均灰度与极暗像素占比。
+// DXGI 桌面复制在多显卡笔记本（跨适配器）或开启 MPO 时会复制到黑帧，
+// 用它把「捕获失败」和「捕获成功但内容全黑」区分开，写进日志便于远程定位。
+struct LumaStats { int average=-1; int darkPercent=0; };
+LumaStats lumaStats(const QImage &image) {
+    LumaStats stats;
+    if (image.isNull()) return stats;
+    const int stepY=qMax(1,image.height()/48), stepX=qMax(1,image.width()/48);
+    long long sum=0; int count=0, dark=0;
+    for (int y=0;y<image.height();y+=stepY) {
+        const QRgb *line=reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x=0;x<image.width();x+=stepX) {
+            const QRgb p=line[x];
+            const int value=(qRed(p)+qGreen(p)+qBlue(p))/3;
+            sum+=value; ++count; if (value<=2) ++dark;
+        }
+    }
+    if (!count) return stats;
+    stats.average=int(sum/count);
+    stats.darkPercent=dark*100/count;
+    return stats;
+}
+// 整体全黑，或几乎全黑（残留几个亮点）都算黑帧。
+// 误判的代价只是多抓一次 GDI，漏判的代价是继续黑屏，所以这里放宽。
+bool looksBlack(const QImage &image) {
+    const LumaStats stats=lumaStats(image);
+    if (stats.average<0) return true;
+    return stats.average<=2 || stats.darkPercent>=98;
+}
+// 灰度统计已足够区分「DXGI 黑帧 / GDI 兜底生效 / GDI 也是黑」三种情况，
+// 因此不做诊断图落盘：产品约定「不保存截图历史或文件」，屏幕内容一律只在内存中。
+
+// GDI 兜底：DXGI 复制到黑帧时，改用 GDI 抓整个虚拟桌面。
+// GDI 走 DWM 合成路径，不受跨适配器复制与 MPO 影响。
+// 返回的是物理像素图，坐标原点在虚拟桌面左上角。
+QImage captureDesktopWithGdi() {
+    const int x=GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int y=GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int width=GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int height=GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (width<=0 || height<=0) { appendDiagnosticLog(QStringLiteral("GDI 兜底：虚拟桌面尺寸无效")); return {}; }
+    // 两条等价路径：CreateDC("DISPLAY") 的 DC 覆盖整个虚拟桌面且原点在虚拟桌面左上角；
+    // GetDC(NULL) 的原点固定在主屏左上角，需要用虚拟桌面偏移做源坐标。
+    HDC displayDC=CreateDCW(L"DISPLAY",nullptr,nullptr,nullptr);
+    const bool useScreenDc=displayDC!=nullptr;
+    if (!useScreenDc) {
+        displayDC=GetDC(nullptr);
+        if (!displayDC) { appendDiagnosticLog(QStringLiteral("GDI 兜底：GetDC(NULL) 失败，错误 %1").arg(GetLastError())); return {}; }
+    }
+    HDC memDC=CreateCompatibleDC(displayDC);
+    if (!memDC) { appendDiagnosticLog(QStringLiteral("GDI 兜底：CreateCompatibleDC 失败，错误 %1").arg(GetLastError())); DeleteDC(displayDC); return {}; }
+    BITMAPINFO info{}; info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth=width; info.bmiHeader.biHeight=-height;   // 负高度＝自上而下，与 QImage 行序一致
+    info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=32; info.bmiHeader.biCompression=BI_RGB;
+    void *bits=nullptr;
+    HBITMAP dib=CreateDIBSection(displayDC,&info,DIB_RGB_COLORS,&bits,nullptr,0);
+    if (!dib || !bits) {
+        appendDiagnosticLog(QStringLiteral("GDI 兜底：CreateDIBSection 失败，错误 %1").arg(GetLastError()));
+        if (dib) DeleteObject(dib); DeleteDC(memDC); DeleteDC(displayDC); return {};
+    }
+    HGDIOBJ previous=SelectObject(memDC,dib);
+    const BOOL copied=BitBlt(memDC,0,0,width,height,displayDC,useScreenDc?0:x,useScreenDc?0:y,SRCCOPY|CAPTUREBLT);
+    QImage result;
+    if (copied) result=QImage(static_cast<const uchar *>(bits),width,height,width*4,QImage::Format_RGB32).copy();
+    SelectObject(memDC,previous); DeleteObject(dib); DeleteDC(memDC);
+    if (useScreenDc) DeleteDC(displayDC); else ReleaseDC(nullptr,displayDC);
+    if (result.isNull()) { appendDiagnosticLog(QStringLiteral("GDI 兜底：BitBlt 失败，错误 %1").arg(GetLastError())); return {}; }
+    const LumaStats stats=lumaStats(result);
+    appendDiagnosticLog(QStringLiteral("GDI 兜底抓取成功：%1x%2（来源 %3，虚拟桌面原点 %4,%5，平均灰度 %6，暗像素 %7%）")
+        .arg(result.width()).arg(result.height()).arg(useScreenDc?QStringLiteral("CreateDC(DISPLAY)"):QStringLiteral("GetDC(NULL)"))
+        .arg(x).arg(y).arg(stats.average).arg(stats.darkPercent));
+    return result;
+}
 // 捕获单块 DXGI 输出。adapter 与 output 由调用方持有。
 // 每个失败点都写诊断日志，错误码是远程定位的唯一线索。
+// 取到帧后若发现是黑帧，释放并重取（部分驱动首帧是无效的黑面）。
 bool captureOutput(IDXGIAdapter1 *adapter, const ComPtr<IDXGIOutput> &output, const DXGI_OUTPUT_DESC &desc, QImage &result) {
     ComPtr<ID3D11Device> device; ComPtr<ID3D11DeviceContext> deviceContext; D3D_FEATURE_LEVEL level;
     HRESULT hr=D3D11CreateDevice(adapter,D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device,&level,&deviceContext);
@@ -102,30 +177,43 @@ bool captureOutput(IDXGIAdapter1 *adapter, const ComPtr<IDXGIOutput> &output, co
     if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("获取 IDXGIOutput1"),hr)); return false; }
     ComPtr<IDXGIOutputDuplication> duplication; hr=output1->DuplicateOutput(device.Get(),&duplication);
     if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("DuplicateOutput（复制桌面输出）"),hr)); return false; }
-    DXGI_OUTDUPL_FRAME_INFO info{}; ComPtr<IDXGIResource> desktop;
-    hr=duplication->AcquireNextFrame(2500,&info,&desktop);
-    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("AcquireNextFrame"),hr)); return false; }
-    ComPtr<ID3D11Texture2D> texture; hr=desktop.As(&texture);
-    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("获取桌面纹理"),hr)); duplication->ReleaseFrame(); return false; }
-    D3D11_TEXTURE2D_DESC texDesc{}; texture->GetDesc(&texDesc);
-    texDesc.Usage=D3D11_USAGE_STAGING; texDesc.BindFlags=0; texDesc.CPUAccessFlags=D3D11_CPU_ACCESS_READ; texDesc.MiscFlags=0;
-    ComPtr<ID3D11Texture2D> staging; hr=device->CreateTexture2D(&texDesc,nullptr,&staging);
-    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("创建暂存纹理"),hr)); duplication->ReleaseFrame(); return false; }
-    deviceContext->CopyResource(staging.Get(),texture.Get()); D3D11_MAPPED_SUBRESOURCE map{};
-    hr=deviceContext->Map(staging.Get(),0,D3D11_MAP_READ,0,&map);
-    if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("读取暂存纹理"),hr)); duplication->ReleaseFrame(); return false; }
-    QImage image(static_cast<const uchar *>(map.pData),int(texDesc.Width),int(texDesc.Height),int(map.RowPitch),QImage::Format_RGB32);
-    result=image.copy();
-    for (int y=0;y<result.height();++y) {
-        auto *line=reinterpret_cast<QRgb *>(result.scanLine(y));
-        for (int x=0;x<result.width();++x) line[x]|=0xff000000u;
+    const QString deviceName=QString::fromWCharArray(desc.DeviceName);
+    QImage frame; bool gotFrame=false;
+    for (int attempt=1;attempt<=3;++attempt) {
+        // 首帧给足等待；重试只等 300ms，避免黑帧时白等数秒。
+        const UINT timeout=attempt==1?2500u:300u;
+        DXGI_OUTDUPL_FRAME_INFO info{}; ComPtr<IDXGIResource> desktop;
+        hr=duplication->AcquireNextFrame(timeout,&info,&desktop);
+        if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("AcquireNextFrame"),hr)); break; }
+        ComPtr<ID3D11Texture2D> texture; hr=desktop.As(&texture);
+        if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("获取桌面纹理"),hr)); duplication->ReleaseFrame(); break; }
+        D3D11_TEXTURE2D_DESC texDesc{}; texture->GetDesc(&texDesc);
+        texDesc.Usage=D3D11_USAGE_STAGING; texDesc.BindFlags=0; texDesc.CPUAccessFlags=D3D11_CPU_ACCESS_READ; texDesc.MiscFlags=0;
+        ComPtr<ID3D11Texture2D> staging; hr=device->CreateTexture2D(&texDesc,nullptr,&staging);
+        if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("创建暂存纹理"),hr)); duplication->ReleaseFrame(); break; }
+        deviceContext->CopyResource(staging.Get(),texture.Get()); D3D11_MAPPED_SUBRESOURCE map{};
+        hr=deviceContext->Map(staging.Get(),0,D3D11_MAP_READ,0,&map);
+        if (FAILED(hr)) { appendDiagnosticLog(failure(QStringLiteral("读取暂存纹理"),hr)); duplication->ReleaseFrame(); break; }
+        QImage image(static_cast<const uchar *>(map.pData),int(texDesc.Width),int(texDesc.Height),int(map.RowPitch),QImage::Format_RGB32);
+        frame=image.copy();
+        for (int y=0;y<frame.height();++y) {
+            auto *line=reinterpret_cast<QRgb *>(frame.scanLine(y));
+            for (int x=0;x<frame.width();++x) line[x]|=0xff000000u;
+        }
+        deviceContext->Unmap(staging.Get(),0); duplication->ReleaseFrame();
+        gotFrame=true;
+        if (!looksBlack(frame)) break;
+        const LumaStats stats=lumaStats(frame);
+        appendDiagnosticLog(QStringLiteral("输出 %1 取到黑帧（第 %2/3 次尝试，平均灰度 %3，暗像素 %4%），释放后重取")
+            .arg(deviceName).arg(attempt).arg(stats.average).arg(stats.darkPercent));
     }
-    deviceContext->Unmap(staging.Get(),0); duplication->ReleaseFrame();
+    if (!gotFrame) return false;
     int rotation=0;
     if (desc.Rotation==DXGI_MODE_ROTATION_ROTATE90) rotation=90;
     if (desc.Rotation==DXGI_MODE_ROTATION_ROTATE180) rotation=180;
     if (desc.Rotation==DXGI_MODE_ROTATION_ROTATE270) rotation=270;
-    if (rotation) result=result.transformed(QTransform().rotate(rotation));
+    if (rotation) frame=frame.transformed(QTransform().rotate(rotation));
+    result=frame;
     return true;
 }
 // 捕获整个虚拟桌面：两遍式。
@@ -187,23 +275,70 @@ CaptureResult captureAllFrames(const QVector<ScreenTarget> &targets) {
         result.frame.windowRects=list.result;
         appendDiagnosticLog(QStringLiteral("窗口枚举完成：%1 个").arg(list.result.size()));
     }
-    // 第二遍：逐输出捕获；镜像输出物理矩形相同，复用同一帧，屏数仍与 Qt 一致。
-    QVector<QRect> capturedPhysical; QVector<int> imageIndex;
-    for (const OutputItem &item : items) {
+    // 第二遍：逐输出捕获。DXGI 在多显卡笔记本上可能复制到黑帧，
+    // 因此先各自捕获并统计黑帧，必要时用 GDI 兜底补齐，再做镜像去重。
+    QVector<QImage> images(items.size());
+    for (int i=0;i<items.size();++i)
+        if (!captureOutput(items[i].adapter.Get(),items[i].output,items[i].desc,images[i]))
+            appendDiagnosticLog(QStringLiteral("输出 %1 捕获失败，未拿到画面").arg(items[i].deviceName));
+    int blackCount=0;
+    for (int i=0;i<items.size();++i)
+        if (images[i].isNull() || looksBlack(images[i])) ++blackCount;
+    if (blackCount>0) {
+        appendDiagnosticLog(QStringLiteral("检测到 %1 块屏内容为黑或缺失，尝试 GDI 兜底抓取整桌面").arg(blackCount));
+        const QImage gdi=captureDesktopWithGdi();
+        if (gdi.isNull()) appendDiagnosticLog(QStringLiteral("GDI 兜底未取得画面，保留 DXGI 结果"));
+        else if (gdi.size()!=physicalVirtual.size())
+            appendDiagnosticLog(QStringLiteral("GDI 兜底尺寸 %1x%2 与物理虚拟桌面 %3x%4 不一致（可能是 DPI 虚拟化），放弃兜底")
+                .arg(gdi.width()).arg(gdi.height()).arg(physicalVirtual.width()).arg(physicalVirtual.height()));
+        else {
+            for (int i=0;i<items.size();++i) {
+                if (!images[i].isNull() && !looksBlack(images[i])) continue;
+                const QRect source=items[i].physical.translated(-physicalVirtual.topLeft()).intersected(gdi.rect());
+                if (source.isEmpty()) { appendDiagnosticLog(QStringLiteral("GDI 兜底：输出 %1 的物理矩形不在整桌面范围内").arg(items[i].deviceName)); continue; }
+                const QImage piece=gdi.copy(source);
+                if (piece.size()!=items[i].physical.size()) {
+                    appendDiagnosticLog(QStringLiteral("GDI 兜底切片尺寸不符：%1x%2，期望 %3x%4")
+                        .arg(piece.width()).arg(piece.height()).arg(items[i].physical.width()).arg(items[i].physical.height()));
+                    continue;
+                }
+                images[i]=piece;
+                const LumaStats stats=lumaStats(piece);
+                appendDiagnosticLog(QStringLiteral("GDI 兜底补齐输出 %1：%2x%3，平均灰度 %4，暗像素 %5%")
+                    .arg(items[i].deviceName).arg(piece.width()).arg(piece.height()).arg(stats.average).arg(stats.darkPercent));
+            }
+        }
+    }
+    // 镜像输出：物理矩形相同则复用同一帧，屏数仍与 Qt 报告一致。
+    QVector<QRect> seenPhysical;
+    for (int i=0;i<items.size();++i) {
+        if (images[i].isNull()) continue;
+        QImage image=images[i];
         int reuse=-1;
-        for (int i=0;i<capturedPhysical.size();++i)
-            if (capturedPhysical[i]==item.physical) { reuse=i; break; }
-        QImage image;
-        if (reuse>=0) image=result.frame.screens[imageIndex[reuse]].image;
-        else if (!captureOutput(item.adapter.Get(),item.output,item.desc,image)) continue;
-        capturedPhysical.append(item.physical); imageIndex.append(result.frame.screens.size());
-        result.frame.screens.append(ScreenImage{item.logical,image});
-        appendDiagnosticLog(QStringLiteral("输出 %1 捕获成功：%2x%3%4").arg(item.deviceName).arg(image.width()).arg(image.height())
-            .arg(reuse>=0?QStringLiteral("（镜像屏，复用同物理矩形输出）"):QString()));
+        for (int j=0;j<seenPhysical.size();++j)
+            if (seenPhysical[j]==items[i].physical) { reuse=j; break; }
+        if (reuse>=0) {
+            image=images[reuse];
+            appendDiagnosticLog(QStringLiteral("输出 %1 与其他输出物理矩形相同，复用同一帧").arg(items[i].deviceName));
+        } else seenPhysical.append(items[i].physical);
+        result.frame.screens.append(ScreenImage{items[i].logical,image});
+        const LumaStats stats=lumaStats(image);
+        appendDiagnosticLog(QStringLiteral("输出 %1 捕获成功：%2x%3，平均灰度 %4，暗像素 %5%")
+            .arg(items[i].deviceName).arg(image.width()).arg(image.height()).arg(stats.average).arg(stats.darkPercent));
     }
     if (result.frame.screens.isEmpty()) {
         appendDiagnosticLog(QStringLiteral("captureAllFrames 失败：没有捕获到任何输出"));
         result.error=QStringLiteral("无法识别当前显示器，请重新截图。"); return result;
+    }
+    // 全黑时不给出画面：驱动复制不到内容，用户看到的只会是一块黑屏。
+    // 明确报错比无声黑屏好，日志里保留灰度数据供排查。
+    int stillBlack=0;
+    for (const ScreenImage &screen : result.frame.screens)
+        if (looksBlack(screen.image)) ++stillBlack;
+    if (stillBlack==result.frame.screens.size()) {
+        appendDiagnosticLog(QStringLiteral("captureAllFrames 完成：%1 块屏幕，但内容全部为黑").arg(result.frame.screens.size()));
+        result.error=QStringLiteral("显卡驱动返回了黑画面，无法截图。请更新显卡驱动后重试。");
+        return result;
     }
     appendDiagnosticLog(QStringLiteral("captureAllFrames 完成：%1 块屏幕").arg(result.frame.screens.size()));
     result.frame.virtualGeometry=virtualGeometry(result.frame.screens);
@@ -285,6 +420,12 @@ void captureScreen(QScreen *screen, QObject *context, CaptureCallback callback) 
         detail << QStringLiteral("%1 逻辑(%2,%3 %4x%5) 缩放%6")
             .arg(t.deviceName).arg(t.logical.left()).arg(t.logical.top()).arg(t.logical.width()).arg(t.logical.height()).arg(t.ratio);
     appendDiagnosticLog(QStringLiteral("captureScreen：主线程屏快照 [%1]").arg(detail.join(QStringLiteral(" | "))));
+    // DPI 感知级别：GDI 兜底只有在按物理像素工作（每显示器感知）时才对得上 DXGI 坐标。
+    // 这两个 API 需要较新的 SDK，旧 SDK 下用尺寸校验兜底即可。
+#if defined(NTDDI_VERSION) && defined(NTDDI_WIN10_RS2) && NTDDI_VERSION >= NTDDI_WIN10_RS2
+    appendDiagnosticLog(QStringLiteral("进程 DPI 感知级别：%1（0=未感知 1=系统 2=每显示器）")
+        .arg(int(GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()))));
+#endif
     QPointer<QObject> target(context);
     std::thread([target,callback,targets] {
         const qint64 started=QDateTime::currentMSecsSinceEpoch();

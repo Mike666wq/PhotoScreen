@@ -115,7 +115,7 @@ void App::beginCapture() {
                 return;
             }
             m_capturing=false;
-            if (!selected || result.frame.screens.isEmpty()) {
+            if (!selected || result.frame.screens.isEmpty() || !result.error.isEmpty()) {
                 appendDiagnosticLog(QStringLiteral("捕获失败：屏数 %1，错误=%2").arg(result.frame.screens.size()).arg(result.error.isEmpty()?QStringLiteral("无"):result.error));
                 reportCaptureError(result); return;
             }

@@ -207,21 +207,24 @@ private slots:
         QTest::mouseMove(width,QPoint(2,width->height()/2));
         QTest::mouseRelease(width,Qt::LeftButton,Qt::NoModifier,QPoint(2,width->height()/2));
         QVERIFY(width->value()<7);
-        QTest::keyClick(overlay,Qt::Key_Escape);
+        // 必须真正销毁覆盖层：样式面板打开时 Escape 只关面板，
+        // 覆盖层会继续存活，其去抖定时器会在后续用例里写设置、污染别的用例。
+        overlay->close(); QCoreApplication::processEvents();
     }
     void sliderSettingsArePersistedAfterDebounce() {
         // 滑块停止变化后要落盘：拖动过程中每次变化都写盘是同步 IO，会让拖动发涩。
+        // 用对象自己的观察接口断言，不依赖全局 QSettings 状态，避免用例之间互相污染。
         auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
         overlay->show(); QCoreApplication::processEvents();
         overlay->findChild<QToolButton *>("widthButton")->click();
         auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
-        const int original=QSettings().value("annotation/width",3).toInt();
-        const int target=original==9?8:9;
+        QCOMPARE(overlay->persistedLineWidth(),0);      // 还没落盘过
+        const int target=width->value()==8?7:8;         // 必须与当前值不同，才会触发 valueChanged
         width->setValue(target);
-        QTest::qWait(600);                                   // 等去抖间隔过去
-        QCOMPARE(QSettings().value("annotation/width",3).toInt(),target);
-        QSettings().setValue("annotation/width",original);  // 还原，避免影响其它用例
-        QTest::keyClick(overlay,Qt::Key_Escape);
+        QCOMPARE(overlay->persistedLineWidth(),0);      // 刚改完，还没到去抖间隔，不应落盘
+        QTest::qWait(600);                              // 等去抖间隔过去
+        QCOMPARE(overlay->persistedLineWidth(),target);  // 此时应已落盘
+        overlay->close(); QCoreApplication::processEvents();
     }
     void styleAdjustmentIsSingleUndoStep() {
         auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });

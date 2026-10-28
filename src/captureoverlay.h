@@ -32,6 +32,9 @@ public:
     void applyChosenColor(const QColor &color);
     // 底图重新裁剪次数，仅供测试观察渲染缓存是否生效。
     int cropCount() const { return m_cropCount; }
+    // 最近一次落盘的粗细值；0 表示本对象还没落盘过。
+    // 供测试观察去抖保存是否真的发生，避免依赖全局 QSettings 状态。
+    int persistedLineWidth() const { return m_persistedWidth; }
 signals:
     void finished();protected:
     void paintEvent(QPaintEvent *) override;
@@ -119,6 +122,7 @@ private:
     QRectF m_cacheSelection;    // 已缓存底图对应的选区，变化时才重新裁剪
     QVector<ScreenCache> m_caches;  // 跨屏时每块参与的屏幕一份缓存
     int m_cropCount = 0;        // 底图重新裁剪的次数，仅供测试观察
+    int m_persistedWidth = 0;   // 最近一次落盘的粗细值，仅供测试观察
     QFrame *m_toolbar = nullptr;
     QFrame *m_stylePanel = nullptr;
     QFrame *m_colorPanel = nullptr;

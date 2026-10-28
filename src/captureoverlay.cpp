@@ -648,6 +648,7 @@ void CaptureOverlay::commitStyleEdit() {
     update();
 }
 void CaptureOverlay::saveStyleSettings() {
+    m_persistedWidth=m_lineWidth;
     QSettings settings;
     settings.setValue("annotation/width",m_lineWidth);
     settings.setValue("annotation/fontSize",m_fontSize);

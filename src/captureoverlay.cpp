@@ -151,12 +151,6 @@ private:
     bool m_hasGradient=false;
     bool m_dragging=false;   // 自己接管鼠标拖动，避免与 QSlider 内部状态打架
 };
-// 自绘滑块的手柄中心 x 坐标；不是自绘滑块时返回 -1。
-int sliderHandleCenterX(const QSlider *slider) {
-    if (!slider) return -1;
-    if (auto *styled=dynamic_cast<const StyledSlider *>(slider)) return styled->handleCenterX();
-    return -1;
-}
 // 参数面板里的一行：名称 + 自绘滑块 + 紧贴滑块右端的数值。
 StyledSlider *addStyledSlider(QHBoxLayout *row, const QString &title, int minimum, int maximum, int value, QLabel **valueLabel) {
     auto *name=new QLabel(title);
@@ -244,6 +238,13 @@ QIcon toolIcon(Tool tool) {
     }
     return QIcon(pixmap);
 }
+}
+// 自绘滑块的手柄中心 x 坐标；不是自绘滑块时返回 -1。
+// 放在匿名 namespace 之外：测试目标需要链接到这个符号（内部链接会链不上）。
+int sliderHandleCenterX(const QSlider *slider) {
+    if (!slider) return -1;
+    if (auto *styled=dynamic_cast<const StyledSlider *>(slider)) return styled->handleCenterX();
+    return -1;
 }
 CaptureOverlay::CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWriter writer)
     : QWidget(nullptr), m_frame(std::move(frame)), m_clipboardWriter(writer ? std::move(writer) : ClipboardWriter(writeClipboard)), m_screen(screen) {

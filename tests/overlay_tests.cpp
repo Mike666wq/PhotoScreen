@@ -5,6 +5,7 @@
 #include <QInputMethodEvent>
 #include <QLabel>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QScreen>
 #include <QSettings>
 #include <QSignalSpy>
@@ -295,7 +296,10 @@ private slots:
         QTest::keyClick(overlay,Qt::Key_Escape);
         QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(60,140));
         QCOMPARE(overlay->annotations().first().rect,before); QCOMPARE(overlay->undoDepth(),depth); QCOMPARE(finished.count(),0);
+        // 离屏插件不会稳定地把 QCursor 的原生移动转成 QWidget hover，显式投递同坐标事件。
         QTest::mouseMove(overlay,QPoint(10,10));
+        QMouseEvent hover(QEvent::MouseMove,QPointF(10,10),QPointF(overlay->mapToGlobal(QPoint(10,10))),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+        QApplication::sendEvent(overlay,&hover);
         QCOMPARE(overlay->cursor().shape(),Qt::SizeFDiagCursor);
     }
     void rectangleSideAndTextWidthHandlesWork() {

@@ -798,8 +798,7 @@ private slots:
         auto *preset=overlay->findChild<QToolButton *>("preset_1"); QVERIFY(preset);   // #ff6b6b
         preset->click();
         // 预设色写入设置：颜色以十六进制字符串存放，跨后端行为一致。
-        QTest::qWait(450);
-        QCOMPARE(QSettings().value("annotation/tools/rectangle/color").toString(),QStringLiteral("#ff6b6b"));
+        QTRY_COMPARE_WITH_TIMEOUT(QSettings().value("annotation/tools/rectangle/color").toString(),QStringLiteral("#ff6b6b"),3000);
         // 工具栏色块按钮的图标随之更新
         QVERIFY(colorButton->icon().cacheKey()!=before);
         QTest::keyClick(overlay,Qt::Key_Escape);
@@ -836,8 +835,7 @@ private slots:
         QVERIFY(recent->isEnabled());
         // 点最近使用的第一个色块能取回刚才的颜色。
         recent->click();
-        QTest::qWait(450);
-        QCOMPARE(QSettings().value("annotation/tools/rectangle/color").toString(),QStringLiteral("#00b050"));
+        QTRY_COMPARE_WITH_TIMEOUT(QSettings().value("annotation/tools/rectangle/color").toString(),QStringLiteral("#00b050"),3000);
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
     void overlayCoversWholeVirtualDesktop() {

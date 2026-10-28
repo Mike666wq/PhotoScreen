@@ -3,6 +3,7 @@
 #include "platform/platform.h"
 #include <QTimer>
 #include <QWidget>
+#include <array>
 #include <functional>
 
 class QBoxLayout;
@@ -71,6 +72,11 @@ private:
     bool panelVisible() const;
     void positionPanel(QFrame *panel, const QPoint &anchor, bool preferAbove);
     QColor previewColor() const;
+    void applyColor(const QColor &color, bool commitRecent);
+    void syncColorControls();
+    Tool styleTool() const;
+    void markStyleDirty();
+    void loadToolStyle();
     void updateColorPreview();
     QVector<QColor> recentColors() const;
     void rememberColor(const QColor &color);
@@ -124,6 +130,9 @@ private:
     Annotation m_startAnnotation, m_preview;
     bool m_hasPreview = false;
     Tool m_tool = Tool::Select;
+    Tool m_lastDrawingTool = Tool::Rectangle;
+    std::array<ToolStyle,7> m_toolStyles;
+    std::array<bool,7> m_styleDirty{};
     QColor m_color = Qt::red;
     QColor m_textColor = Qt::red;   // 正在编辑的文字颜色，与工具栏当前色解耦
     int m_lineWidth = 3;
@@ -142,6 +151,11 @@ private:
     QFrame *m_colorPanel = nullptr;
     QSlider *m_hueControl = nullptr;
     QSlider *m_valueControl = nullptr;
+    QSlider *m_saturationControl = nullptr;
+    QLabel *m_hueValue = nullptr;
+    QLabel *m_saturationValue = nullptr;
+    QLabel *m_valueValue = nullptr;
+    QFrame *m_colorAdvanced = nullptr;
     QToolButton *m_colorPreview = nullptr;
     QToolButton *m_colorButton = nullptr;
     QToolButton *m_undoButton = nullptr;

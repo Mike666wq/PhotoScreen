@@ -11,6 +11,18 @@
 #include <algorithm>
 
 namespace photo {
+QString toolSettingsKey(Tool tool) {
+    switch (tool) {
+    case Tool::Select: return QStringLiteral("select");
+    case Tool::Rectangle: return QStringLiteral("rectangle");
+    case Tool::Ellipse: return QStringLiteral("ellipse");
+    case Tool::Arrow: return QStringLiteral("arrow");
+    case Tool::Pen: return QStringLiteral("pen");
+    case Tool::Text: return QStringLiteral("text");
+    case Tool::Mosaic: return QStringLiteral("mosaic");
+    }
+    return {};
+}
 namespace {
 // 马赛克：把区域缩小成色块再放大回去，块大小随输出比例变化。
 // 取样来自 source（而不是 out），这样标注层可以和底图分层缓存。

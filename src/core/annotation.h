@@ -15,6 +15,13 @@ class QTextDocument;
 namespace photo {
 enum class Tool { Select, Rectangle, Ellipse, Arrow, Pen, Text, Mosaic };
 using AnnotationId = quint64;
+struct ToolStyle {
+    QColor color = QColor(QStringLiteral("#ff3b3b"));
+    int width = 3;
+    int fontSize = 18;
+    int fontWeight = 400;
+};
+QString toolSettingsKey(Tool tool);
 struct Annotation {
     AnnotationId id = 0;
     Tool tool = Tool::Rectangle;

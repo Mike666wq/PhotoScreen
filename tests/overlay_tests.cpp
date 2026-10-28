@@ -183,6 +183,46 @@ private slots:
         QVERIFY(overlay->rect().contains(visible));
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
+    void sliderHandleMatchesPointerPosition() {
+        // 自绘滑块的手柄位置必须与命中位置一致：按在看到的手柄上，值不该跳走。
+        // 之前手柄位置算错（sliderPositionFromValue 的 span/offset 传反），
+        // 视觉手柄与真实位置完全脱节，用户表现为「拖不动、逻辑错乱」。
+        // 原有用例都只 setValue()，从未走过真实鼠标命中路径，所以没能挡住这个回归。
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        overlay->findChild<QToolButton *>("widthButton")->click();      // 打开样式面板
+        QCoreApplication::processEvents();
+        auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
+        QVERIFY(width->isVisible());
+        width->setValue(7);
+        const int handle=sliderHandleCenterX(width);
+        QVERIFY(handle>0);
+        QVERIFY(handle<width->width());
+        // 按在看到的手柄上：值保持不变，而不是跳到最大或最小。
+        QTest::mousePress(width,Qt::LeftButton,Qt::NoModifier,QPoint(handle,width->height()/2));
+        QTest::mouseRelease(width,Qt::LeftButton,Qt::NoModifier,QPoint(handle,width->height()/2));
+        QCOMPARE(width->value(),7);
+        // 从手柄位置往轨道左端拖，值应当跟着变小。
+        QTest::mousePress(width,Qt::LeftButton,Qt::NoModifier,QPoint(handle,width->height()/2));
+        QTest::mouseMove(width,QPoint(2,width->height()/2));
+        QTest::mouseRelease(width,Qt::LeftButton,Qt::NoModifier,QPoint(2,width->height()/2));
+        QVERIFY(width->value()<7);
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
+    void sliderSettingsArePersistedAfterDebounce() {
+        // 滑块停止变化后要落盘：拖动过程中每次变化都写盘是同步 IO，会让拖动发涩。
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); QCoreApplication::processEvents();
+        overlay->findChild<QToolButton *>("widthButton")->click();
+        auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
+        const int original=QSettings().value("annotation/width",3).toInt();
+        const int target=original==9?8:9;
+        width->setValue(target);
+        QTest::qWait(600);                                   // 等去抖间隔过去
+        QCOMPARE(QSettings().value("annotation/width",3).toInt(),target);
+        QSettings().setValue("annotation/width",original);  // 还原，避免影响其它用例
+        QTest::keyClick(overlay,Qt::Key_Escape);
+    }
     void styleAdjustmentIsSingleUndoStep() {
         auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
         overlay->show(); QCoreApplication::processEvents();

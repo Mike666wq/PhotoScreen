@@ -1,6 +1,7 @@
 #pragma once
 #include "core/annotation.h"
 #include "platform/platform.h"
+#include <QTimer>
 #include <QWidget>
 #include <functional>
 
@@ -13,6 +14,11 @@ class QToolButton;
 class QScreen;
 
 namespace photo {
+// 自绘滑块手柄中心的 x 坐标（与 paintEvent 用的是同一套几何）。
+// 供测试核对「看到的」与「摸到的」是不是同一个位置：把鼠标按在这个坐标上，
+// QSlider 内部算出的值应当等于滑块当前值。
+int sliderHandleCenterX(const QSlider *slider);
+
 class CaptureOverlay final : public QWidget {
     Q_OBJECT
 public:
@@ -68,6 +74,8 @@ private:
     void setTool(Tool tool);
     void applyStyleChange(int index, const Annotation &item);
     void commitStyleEdit();
+    // 样式设置的持久化：滑块拖动时每次变化都写盘会明显卡顿，改为去抖后统一写入。
+    void saveStyleSettings();
     void startText(const QPointF &point, int existing = -1);
     void applyEditorTextStyle();
     void resizeTextEditor();
@@ -131,5 +139,6 @@ private:
     QTextEdit *m_textEditor = nullptr;
     QPointF m_textAnchor;
     int m_editingText = -1;
+    QTimer m_settingsSaveTimer;   // 去抖：滑块停止变化后才落盘
 };
 }

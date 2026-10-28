@@ -1238,7 +1238,14 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *event) {
         if (panelVisible()) { hidePanels(); return; }
         cancelCapture(); return;
     }
-    if (m_textEditor) { QApplication::sendEvent(m_textEditor,event); return; }
+    if (m_textEditor) {
+        // 从 QTextEdit 冒泡来的未处理按键不能再次发送给同一个编辑器，否则会递归。
+        if (event->matches(QKeySequence::Undo)) undoOrRedo(false);
+        else if (event->matches(QKeySequence::Redo)) undoOrRedo(true);
+        else if (event->matches(QKeySequence::Copy)) m_textEditor->copy();
+        else if (event->key()==Qt::Key_Return || event->key()==Qt::Key_Enter) m_textEditor->insertPlainText(QStringLiteral("\n"));
+        event->accept(); return;
+    }
     if (event->modifiers()==Qt::NoModifier && event->key()>=Qt::Key_A && event->key()<=Qt::Key_Z) {
         const QString keys=QStringLiteral("VROAPTM");
         const int tool=keys.indexOf(QChar(ushort(event->key())));

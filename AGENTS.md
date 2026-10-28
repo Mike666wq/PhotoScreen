@@ -24,7 +24,8 @@ src/
   captureoverlay.{h,cpp} 覆盖层：选区 / 工具栏 / 标注交互
   core/                  纯逻辑层，不得依赖平台 API 或 Widgets
     geometry.{h,cpp}     逻辑↔像素换算、坐标映射、放大镜取样
-    annotation.{h,cpp}   标注模型、Undo 命令、绘制、命中判定、选区渲染
+    annotation.{h,cpp}   稳定 ID、ToolStyle、Undo、文字排版、标注合成与选区渲染
+    interaction.{h,cpp}  实际屏幕布局、控制点与约束几何
   platform/
     platform.h           平台抽象接口
     macos.mm / windows.cpp  平台实现
@@ -113,6 +114,14 @@ cmake -S . -B build && cmake --build build   # ❌ 不要在本地跑
 `docs/acceptance.md` 是实机验收清单，覆盖截图权限、窗口识别、多显示器与缩放、标注与中文输入、剪贴板、升级卸载、开机启动、资源占用。
 
 **Actions 的自动测试不替代真实桌面验收。** 每次发布前需在 Mac 和 Windows 实机走完清单并填写表格。
+
+## v1.2 交互与渲染契约
+
+- 标注以会话内稳定 `AnnotationId` 标识，选中对象与文字草稿不得保存可失效的数组索引。
+- 工具默认样式与选中对象的当前样式分离；仅显式修改的字段更新该工具偏好，旧全局设置仅作兼容读取。
+- 预览和导出共用选区底图、统一输出比例和绘制顺序；马赛克必须包含此前标注。局部重绘涉及马赛克时扩展到整块取样区域。
+- 字体 Noto Sans SC 只由 CI 下载并验证、由测试进程加载；不修改本地或 runner 系统字体，不进入应用安装包。
+- Regression 中的 UI 图片都是合成画面，不能据此宣称真机或输入法验收通过。
 
 ## 已知未修项（不要重复实现）
 

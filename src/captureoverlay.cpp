@@ -705,6 +705,7 @@ void CaptureOverlay::syncSelectedStyle() {
 void CaptureOverlay::applyStyleChange(int index, const Annotation &item) {
     // 拖动中（会话已开启）就地修改，释放时统一提交为一步撤销；
     // 键盘或滚轮调整没有会话，立即提交为一步撤销。
+    const QRectF beforeBounds=m_document.items()[index].bounds();
     const bool editing = m_document.editing();
     if (!editing) m_document.beginEdit();
     m_document.setItemInPlace(index, item);
@@ -714,7 +715,8 @@ void CaptureOverlay::applyStyleChange(int index, const Annotation &item) {
     // 否则每滑动一格都要重贴整块虚拟桌面的多屏大图（3 屏时是几十 MB 像素），拖起来会明显发涩。
     // 标注坐标与 m_selection 一样都是覆盖层局部逻辑坐标，无需再平移。
     const QRectF localBounds=item.bounds();
-    const QRect dirty=m_selection.united(localBounds).adjusted(-8,-8,8,8).toAlignedRect().intersected(rect());
+    const qreal padding=qMax<qreal>(8,item.width+4);
+    const QRect dirty=beforeBounds.united(localBounds).adjusted(-padding,-padding,padding,padding).toAlignedRect().intersected(rect());
     update(dirty);
 }
 void CaptureOverlay::commitStyleEdit() {
@@ -822,34 +824,30 @@ QVector<Annotation> CaptureOverlay::previewItems() const {
     return items;
 }
 void CaptureOverlay::ensureRenderCache() {
-    // 选区没变时只重绘标注图层，底图不重新裁剪（B6）。
-    if (m_cacheSelection!=m_selection) {
-        m_cacheSelection=m_selection;
-        m_caches.clear();
+    if (m_selection.isEmpty()) return;
+    if (m_cacheSelection!=m_selection || m_caches.isEmpty()) {
+        m_cacheSelection=m_selection; m_caches.clear(); m_cachedItems.clear();
         const QPoint origin=m_frame.virtualGeometry.topLeft();
-        for (const auto &screen : m_frame.screens) {
-            if (screen.isEmpty()) continue;
-            const QRect screenLocal=screen.geometry.translated(-origin);
-            const QRectF selected=m_selection.intersected(screenLocal);
-            if (selected.isEmpty()) continue;
-            ScreenCache cache;
-            cache.logicalRect=selected;
-            cache.origin=screenLocal.topLeft();
-            cache.scaleX=screen.scaleX(); cache.scaleY=screen.scaleY();
-            cache.crop=pixelRect(selected.translated(-screenLocal.topLeft()),screen.geometry.size(),screen.image.size());
-            if (cache.crop.isEmpty()) continue;
-            cache.base=screen.image.copy(cache.crop);
-            cache.annotations=QImage(cache.base.size(),QImage::Format_ARGB32_Premultiplied);
-            m_caches.append(cache);
-            ++m_cropCount;
-        }
+        const QRectF selection=m_selection.translated(origin);
+        const SelectionMetrics metrics=selectionMetrics(m_frame.screens,selection);
+        ScreenCache cache;
+        cache.base=renderSelectionBase(m_frame.screens,selection);
+        if (cache.base.isNull()) return;
+        cache.logicalRect=metrics.logicalRect.translated(-origin);
+        cache.pixelFromLocal=metrics.pixelFromLogical;
+        cache.pixelFromLocal.offset+=QPointF(origin.x()*metrics.scaleX,origin.y()*metrics.scaleY);
+        m_caches.append(cache); ++m_cropCount;
     }
     const QVector<Annotation> items=previewItems();
-    for (auto &cache : m_caches) {
-        if (cache.annotations.isNull()) cache.annotations=QImage(cache.base.size(),QImage::Format_ARGB32_Premultiplied);
-        cache.annotations.fill(Qt::transparent);
-        renderAnnotationLayer(cache.annotations,cache.base,cache.crop,cache.origin,cache.scaleX,cache.scaleY,items);
-    }
+    auto &cache=m_caches.first();
+    const QRect damage=annotationDamage(m_cachedItems,items,cache.pixelFromLocal,cache.base.rect());
+    if (cache.annotations.isNull() || !damage.isEmpty())
+        renderAnnotationLayer(cache.annotations,cache.base,cache.pixelFromLocal,items,damage);
+    m_cachedItems=items;
+}
+QImage CaptureOverlay::selectionImage() {
+    ensureRenderCache();
+    return m_caches.isEmpty() ? QImage() : compositeLayers(m_caches.first().base,m_caches.first().annotations);
 }
 QVector<Annotation> CaptureOverlay::virtualAnnotations() const {
     QVector<Annotation> items=m_document.items();
@@ -1238,7 +1236,14 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *event) {
         if (panelVisible()) { hidePanels(); return; }
         cancelCapture(); return;
     }
-    if (m_textEditor) { QApplication::sendEvent(m_textEditor,event); return; }
+    if (m_textEditor) {
+        // 从 QTextEdit 冒泡来的未处理按键不能再次发送给同一个编辑器，否则会递归。
+        if (event->matches(QKeySequence::Undo)) undoOrRedo(false);
+        else if (event->matches(QKeySequence::Redo)) undoOrRedo(true);
+        else if (event->matches(QKeySequence::Copy)) m_textEditor->copy();
+        else if (event->key()==Qt::Key_Return || event->key()==Qt::Key_Enter) m_textEditor->insertPlainText(QStringLiteral("\n"));
+        event->accept(); return;
+    }
     if (event->modifiers()==Qt::NoModifier && event->key()>=Qt::Key_A && event->key()<=Qt::Key_Z) {
         const QString keys=QStringLiteral("VROAPTM");
         const int tool=keys.indexOf(QChar(ushort(event->key())));
@@ -1299,7 +1304,7 @@ void CaptureOverlay::finishCapture() {
     if (m_settingsSaveTimer.isActive()) { m_settingsSaveTimer.stop(); saveStyleSettings(); }
     if (m_selection.isEmpty()) { m_copying=false; return; }
     // 导出走跨屏渲染：选区与标注都换算成虚拟桌面逻辑坐标。
-    const QImage image=renderSelection(m_frame.screens,m_selection.translated(m_frame.virtualGeometry.topLeft()),virtualAnnotations());
+    const QImage image=selectionImage();
     QString error;
     if (image.isNull() || !m_clipboardWriter(image,&error)) { m_copying=false; showError(error.isEmpty()?QStringLiteral("无法复制图像，请重试。") : error); return; }
     m_copying=false;
@@ -1321,7 +1326,7 @@ void CaptureOverlay::endSession() {
     m_textDraft={}; m_preeditActive=false;
     m_hasPreview=false;
     m_drag=Drag::None;
-    m_caches.clear();
+    m_caches.clear(); m_cachedItems.clear();
     m_frame.screens.clear();
     m_document.undoStack()->clear();
     m_document.setItemsForCommand({});

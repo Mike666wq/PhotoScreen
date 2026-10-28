@@ -1,6 +1,7 @@
 #include "core/annotation.h"
 #include "core/geometry.h"
 #include "core/interaction.h"
+#include "report_font.h"
 #include <QPainter>
 #include <QTextBlock>
 #include <QTextDocument>
@@ -12,6 +13,11 @@ using namespace photo;
 class CoreTests : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase() {
+        QCoreApplication::setOrganizationName(QStringLiteral("PhotoScreenTests"));
+        QCoreApplication::setApplicationName(QStringLiteral("CoreTests"));
+        QVERIFY2(loadReportFont(),"固定测试字体加载失败或缺少中文字形");
+    }
     void uiPlacementAvoidsScreenGaps() {
         const QVector<QRect> screens={QRect(-600,0,600,480),QRect(0,200,600,480)};
         QCOMPARE(interactionScreen(screens,QPointF(100,250),QRectF(-40,210,200,100)),screens[1]);
@@ -56,6 +62,50 @@ private slots:
         const QRectF resized=resizeFromHandle(QRectF(10,20,100,60),7,QPointF(0,50),bounds);
         QCOMPARE(resized,QRectF(0,20,110,60));
         QVERIFY(resizeFromHandle(QRectF(10,20,100,60),0,QPointF(110,80),bounds).width()>=2);
+    }
+    void orderedMosaicMatchesPreviewAndPartialUpdates() {
+        QImage base(120,100,QImage::Format_ARGB32_Premultiplied);
+        for (int y=0;y<base.height();++y) for (int x=0;x<base.width();++x)
+            base.setPixelColor(x,y,((x+y)%2)?QColor("#dddddd"):QColor("#444444"));
+        Annotation before; before.tool=Tool::Rectangle; before.rect=QRectF(20,20,20,20); before.width=12; before.color=Qt::red;
+        Annotation mosaic; mosaic.tool=Tool::Mosaic; mosaic.rect=QRectF(10,10,70,70);
+        Annotation after; after.tool=Tool::Rectangle; after.rect=QRectF(45,30,20,30); after.width=4; after.color=Qt::green;
+        QVector<Annotation> items={before,mosaic,after};
+        const AffineMap map;
+        QImage layer; renderAnnotationLayer(layer,base,QRect(0,0,120,100),QPoint(),1,1,items);
+        const QImage preview=compositeLayers(base,layer);
+        QCOMPARE(preview,renderSelection(base,QSizeF(120,100),QRectF(0,0,120,100),items));
+        int red=0;
+        for (int y=10;y<80;++y) for(int x=10;x<80;++x) {
+            const QColor color=preview.pixelColor(x,y);
+            if (color.red()>180 && color.green()<80) ++red;
+        }
+        QVERIFY(red>0); // 后画的马赛克取样确实包含前面的红色标注。
+        QCOMPARE(preview.pixelColor(45,45),QColor(Qt::green));
+        const auto original=items; items[0].color=Qt::blue;
+        const QRect damage=annotationDamage(original,items,map,base.rect());
+        QVERIFY(!damage.isEmpty()); QVERIFY(damage.width()<base.width());
+        renderAnnotationLayer(layer,base,map,items,damage);
+        const QImage updated=compositeLayers(base,layer);
+        QCOMPARE(updated,renderSelection(base,QSizeF(120,100),QRectF(0,0,120,100),items));
+        QVERIFY(annotationDamage(items,items,map,base.rect()).isEmpty());
+    }
+    void mixedDpiMosaicUsesTheSameOutputGrid() {
+        ScreenImage left; left.geometry=QRect(-100,0,100,100); left.image=QImage(150,150,QImage::Format_ARGB32); left.image.fill(Qt::white);
+        ScreenImage right; right.geometry=QRect(0,0,100,100); right.image=QImage(200,200,QImage::Format_ARGB32); right.image.fill(Qt::gray);
+        const QVector<ScreenImage> screens={left,right};
+        const QRectF selection(-20.5,10.25,70,60);
+        Annotation arrow; arrow.tool=Tool::Arrow; arrow.rect=QRectF(QPointF(-15,20),QPointF(35,50)); arrow.color=Qt::red; arrow.width=8;
+        Annotation mosaic; mosaic.tool=Tool::Mosaic; mosaic.rect=QRectF(-12,12,40,40);
+        const auto metrics=selectionMetrics(screens,selection);
+        QCOMPARE(metrics.screenCount,2); QCOMPARE(metrics.pixelSize,QSize(140,121));
+        const QImage base=renderSelectionBase(screens,selection);
+        QImage layer; renderAnnotationLayer(layer,base,metrics.pixelFromLogical,{arrow,mosaic});
+        QCOMPARE(compositeLayers(base,layer),renderSelection(screens,selection,{arrow,mosaic}));
+        const QVector<Annotation> previous={arrow,mosaic}; arrow.color=Qt::blue;
+        const QVector<Annotation> current={arrow,mosaic};
+        renderAnnotationLayer(layer,base,metrics.pixelFromLogical,current,annotationDamage(previous,current,metrics.pixelFromLogical,base.rect()));
+        QCOMPARE(compositeLayers(base,layer),renderSelection(screens,selection,current));
     }
     void scaling_data() {
         QTest::addColumn<QSizeF>("logical"); QTest::addColumn<QSize>("pixels");

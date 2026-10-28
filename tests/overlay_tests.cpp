@@ -1,10 +1,15 @@
 #include "captureoverlay.h"
 #include "core/interaction.h"
+#include "report_font.h"
 #include <QApplication>
+#include <QDir>
+#include <QFile>
+#include <QPainter>
 #include <QFrame>
 #include <QInputMethodEvent>
 #include <QLabel>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QScreen>
 #include <QSettings>
 #include <QSignalSpy>
@@ -54,6 +59,8 @@ private slots:
         // 在 Windows 注册表与 macOS plist 上才一致，测试结果不会随平台漂移。
         QCoreApplication::setOrganizationName(QStringLiteral("PhotoScreenTests"));
         QCoreApplication::setApplicationName(QStringLiteral("OverlayTests"));
+        QVERIFY2(loadReportFont(),"固定测试字体加载失败或缺少中文字形");
+        QApplication::setFont(QGuiApplication::font());
     }
     void init() { QSettings().clear(); }
     void cleanup() {
@@ -295,7 +302,10 @@ private slots:
         QTest::keyClick(overlay,Qt::Key_Escape);
         QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(60,140));
         QCOMPARE(overlay->annotations().first().rect,before); QCOMPARE(overlay->undoDepth(),depth); QCOMPARE(finished.count(),0);
+        // 离屏插件不会稳定地把 QCursor 的原生移动转成 QWidget hover，显式投递同坐标事件。
         QTest::mouseMove(overlay,QPoint(10,10));
+        QMouseEvent hover(QEvent::MouseMove,QPointF(10,10),QPointF(overlay->mapToGlobal(QPoint(10,10))),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+        QApplication::sendEvent(overlay,&hover);
         QCOMPARE(overlay->cursor().shape(),Qt::SizeFDiagCursor);
     }
     void rectangleSideAndTextWidthHandlesWork() {
@@ -328,6 +338,69 @@ private slots:
         auto *editor=textOverlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
         QTest::keyClicks(editor,QStringLiteral("vroaptm"));
         QCOMPARE(editor->toPlainText(),QStringLiteral("vroaptm")); QVERIFY(textOverlay->findChild<QToolButton *>("tool_5")->isChecked());
+    }
+    void mosaicPreviewAndClipboardAreIdenticalAcrossScreens() {
+        ScreenFrame f=dualFrame();
+        for (auto &screen : f.screens) screen.geometry.translate(-600,0);
+        f.virtualGeometry.translate(-600,0);
+        QImage copied;
+        auto *overlay=new CaptureOverlay(f,QGuiApplication::primaryScreen(),[&](const QImage &image,QString *) { copied=image; return true; });
+        overlay->show(); selectArea(overlay,QPoint(500,80),QPoint(800,300));
+        QTest::keyClick(overlay,Qt::Key_A); selectArea(overlay,QPoint(520,100),QPoint(770,250));
+        QTest::keyClick(overlay,Qt::Key_M); selectArea(overlay,QPoint(580,110),QPoint(690,200));
+        QTest::keyClick(overlay,Qt::Key_R); selectArea(overlay,QPoint(610,150),QPoint(740,230));
+        const QImage preview=overlay->selectionImage(); QVERIFY(!preview.isNull());
+        QVector<Annotation> global=overlay->annotations();
+        for (auto &item : global) item.translate(QPointF(-600,0));
+        QCOMPARE(preview,renderSelection(f.screens,QRectF(-100,80,300,220),global));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("doneButton"),Qt::LeftButton);
+        QCOMPARE(copied,preview);
+    }
+    void writeSyntheticUiEvidence() {
+        const QString directory=qEnvironmentVariable("PHOTOSCREEN_REPORT_DIR");
+        if (directory.isEmpty()) QSKIP("未指定合成界面报告目录");
+        QVERIFY(QDir().mkpath(directory));
+        ScreenFrame synthetic=frame(960,720);
+        {
+            QPainter painter(&synthetic.screens[0].image); painter.scale(2,2);
+            painter.fillRect(QRect(0,0,960,720),QColor("#e9eef5"));
+            painter.fillRect(QRect(40,45,840,580),Qt::white);
+            painter.fillRect(QRect(40,45,840,42),QColor("#dce6f4"));
+            QFont font=painter.font(); font.setPixelSize(18); painter.setFont(font); painter.setPen(QColor("#25344a"));
+            painter.drawText(QPoint(65,73),QStringLiteral("合成测试画面 · 不是真实桌面截图"));
+            painter.drawText(QPoint(110,165),QStringLiteral("截图、标注、复制；原始画面仅在当前会话内保留。"));
+            painter.fillRect(QRect(110,210,600,150),QColor("#f1f5fb"));
+            painter.drawText(QPoint(130,245),QStringLiteral("当前工具的参数在下方显示，完成后复制到剪贴板。"));
+        }
+        auto save=[&](CaptureOverlay *overlay,const QString &name) {
+            QCoreApplication::processEvents();
+            return overlay->grab().save(directory+QLatin1Char('/')+name);
+        };
+        auto *overlay=new CaptureOverlay(synthetic,QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(80,100),QPoint(800,500));
+        QTest::keyClick(overlay,Qt::Key_A); selectArea(overlay,QPoint(180,370),QPoint(550,260));
+        QVERIFY(save(overlay,QStringLiteral("ui-toolbar-arrow.png")));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("colorButton"),Qt::LeftButton);
+        QTest::mouseClick(overlay->findChild<QToolButton *>("advancedColorButton"),Qt::LeftButton);
+        QVERIFY(save(overlay,QStringLiteral("ui-colors-hsv.png")));
+        QTest::keyClick(overlay,Qt::Key_Escape); QTest::keyClick(overlay,Qt::Key_T);
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(140,280));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QInputMethodEvent text; text.setCommitString(QStringLiteral("中文文字编辑\nEsc 保留文字，Enter 换行")); QApplication::sendEvent(editor,&text);
+        overlay->findChild<QSlider *>("fontControl")->setValue(26);
+        QVERIFY(save(overlay,QStringLiteral("ui-text-draft.png")));
+        overlay->close(); QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+        auto *narrow=new CaptureOverlay(frame(320,260),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        narrow->show(); selectArea(narrow,QPoint(12,12),QPoint(300,210)); QTest::keyClick(narrow,Qt::Key_T);
+        QVERIFY(save(narrow,QStringLiteral("ui-narrow-toolbar.png"))); narrow->close();
+        ScreenFrame angled=dualFrame(); angled.screens[1].geometry.moveTop(200); angled.virtualGeometry=QRect(0,0,1200,680);
+        auto *multi=new CaptureOverlay(angled,QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        multi->show(); selectArea(multi,QPoint(500,220),QPoint(820,430)); QTest::keyClick(multi,Qt::Key_A);
+        QTest::mouseClick(multi->findChild<QToolButton *>("colorButton"),Qt::LeftButton);
+        QVERIFY(save(multi,QStringLiteral("ui-screen-gap-layout.png")));
+        QFile note(directory+QStringLiteral("/ui-evidence.md")); QVERIFY(note.open(QIODevice::WriteOnly));
+        const QByteArray contents=QStringLiteral("# 合成界面回归证据\n\n所有画面来自内存合成图与离屏 Widgets，不包含用户屏幕。字体来源与校验见 font-fixture.json。\n\n覆盖紧凑工具栏、HSV 颜色、中文字稿、320×260 窄屏、错位多屏布局。真实屏幕捕获、输入法候选窗口、跨应用粘贴与安装验收仍未验证。\n").toUtf8();
+        QCOMPARE(note.write(contents),qint64(contents.size()));
     }
     void releasePositionAndCopy() {
         QImage copied; int writes=0;

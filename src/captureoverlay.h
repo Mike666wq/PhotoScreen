@@ -36,7 +36,9 @@ public:
     // 供测试观察去抖保存是否真的发生，避免依赖全局 QSettings 状态。
     int persistedLineWidth() const { return m_persistedWidth; }
 signals:
-    void finished();protected:
+    void finished();
+protected:
+    void closeEvent(QCloseEvent *) override;
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
     void mouseMoveEvent(QMouseEvent *) override;
@@ -75,6 +77,11 @@ private:
     void updateColorSwatch();
     void positionToolbar();
     void setTool(Tool tool);
+    int selectedIndex() const;
+    int editingTextIndex() const;
+    void selectObject(int index);
+    void syncSelectedStyle();
+    void endSession();
     void applyStyleChange(int index, const Annotation &item);
     void commitStyleEdit();
     // 样式设置的持久化：滑块拖动时每次变化都写盘会明显卡顿，改为去抖后统一写入。
@@ -110,7 +117,7 @@ private:
     QRectF m_startRect;
     Drag m_drag = Drag::None;
     int m_handle = -1;
-    int m_selected = -1;
+    AnnotationId m_selectedId = 0;
     Annotation m_startAnnotation, m_preview;
     bool m_hasPreview = false;
     Tool m_tool = Tool::Select;
@@ -123,6 +130,10 @@ private:
     QVector<ScreenCache> m_caches;  // 跨屏时每块参与的屏幕一份缓存
     int m_cropCount = 0;        // 底图重新裁剪的次数，仅供测试观察
     int m_persistedWidth = 0;   // 最近一次落盘的粗细值，仅供测试观察
+    bool m_copying = false;
+    bool m_ending = false;
+    QFrame *m_errorBanner = nullptr;
+    QLabel *m_errorMessage = nullptr;
     QFrame *m_toolbar = nullptr;
     QFrame *m_stylePanel = nullptr;
     QFrame *m_colorPanel = nullptr;
@@ -142,7 +153,7 @@ private:
     QToolButton *m_fontButton = nullptr;
     QTextEdit *m_textEditor = nullptr;
     QPointF m_textAnchor;
-    int m_editingText = -1;
+    AnnotationId m_editingTextId = 0;
     QTimer m_settingsSaveTimer;   // 去抖：滑块停止变化后才落盘
 };
 }

@@ -51,8 +51,45 @@ private slots:
     void initTestCase() {
         // 与 src/main.cpp 保持一致：设置组织名与应用名之后，QSettings 的落盘位置
         // 在 Windows 注册表与 macOS plist 上才一致，测试结果不会随平台漂移。
-        QCoreApplication::setOrganizationName(QStringLiteral("PhotoScreen"));
-        QCoreApplication::setApplicationName(QStringLiteral("PhotoScreen"));
+        QCoreApplication::setOrganizationName(QStringLiteral("PhotoScreenTests"));
+        QCoreApplication::setApplicationName(QStringLiteral("OverlayTests"));
+    }
+    void init() { QSettings().clear(); }
+    void cleanup() {
+        for (QWidget *widget : QApplication::topLevelWidgets())
+            if (auto *overlay=qobject_cast<CaptureOverlay *>(widget)) overlay->close();
+        QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+        QSettings().clear();
+    }
+    void continuousDrawingKeepsSelectionForStyleAndUndo() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        auto *arrow=overlay->findChild<QToolButton *>("tool_3"); QVERIFY(arrow);
+        QTest::mouseClick(arrow,Qt::LeftButton);
+        selectArea(overlay,QPoint(50,80),QPoint(250,100));
+        selectArea(overlay,QPoint(50,160),QPoint(250,180));
+        QCOMPARE(overlay->annotations().size(),2);
+        const AnnotationId id=overlay->annotations().last().id;
+        QVERIFY(arrow->isChecked());
+        auto *width=overlay->findChild<QSlider *>("widthControl"); QVERIFY(width);
+        width->setValue(8);
+        QCOMPARE(overlay->annotations().last().width,8.0);
+        QCOMPARE(overlay->annotations().first().width,3.0);
+        QTest::mouseClick(overlay->findChild<QToolButton *>("undoButton"),Qt::LeftButton);
+        QCOMPARE(overlay->annotations().last().id,id);
+        QCOMPARE(width->value(),3);
+        width->setValue(6);
+        QCOMPARE(overlay->annotations().last().width,6.0);
+    }
+    void closingFlushesPreferencesAndEndsOnce() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show();
+        QSignalSpy finished(overlay,&CaptureOverlay::finished);
+        overlay->findChild<QSlider *>("widthControl")->setValue(9);
+        overlay->close();
+        QCOMPARE(finished.count(),1);
+        QCOMPARE(QSettings().value("annotation/width").toInt(),9);
+        QVERIFY(overlay->annotations().isEmpty());
     }
     void releasePositionAndCopy() {
         QImage copied; int writes=0;
@@ -166,9 +203,12 @@ private slots:
         QInputMethodEvent input2; input2.setCommitString(QStringLiteral("第二行")); QApplication::sendEvent(editor,&input2);
         QCOMPARE(editor->toPlainText(),QStringLiteral("测试文字\n第二行"));
         auto *done=overlay->findChild<QToolButton *>("doneButton"); QVERIFY(done);
-        QTimer::singleShot(0,[] { for (QWidget *widget : QApplication::topLevelWidgets()) if (auto *box=qobject_cast<QMessageBox *>(widget)) box->accept(); });
         done->click(); QCOMPARE(attempts,1); QCOMPARE(finished.count(),0);
-        done->click(); QCOMPARE(attempts,2); QCOMPARE(finished.count(),1); QVERIFY(!copied.isNull());
+        auto *error=overlay->findChild<QFrame *>("copyErrorBanner"); QVERIFY(error); QVERIFY(error->isVisible());
+        QVERIFY(overlay->isVisible()); QCOMPARE(overlay->annotations().size(),1);
+        auto *retry=overlay->findChild<QToolButton *>("retryButton"); QVERIFY(retry);
+        QTest::mouseClick(retry,Qt::LeftButton);
+        QCOMPARE(attempts,2); QCOMPARE(finished.count(),1); QVERIFY(!copied.isNull());
         bool hasInk=false;
         for (int y=70;y<180 && !hasInk;++y) for(int x=50;x<450;++x) {
             const QColor c=copied.pixelColor(x,y); if (c.red()>200 && c.green()<150 && c.blue()<150) { hasInk=true; break; }

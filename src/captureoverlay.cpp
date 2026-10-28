@@ -2,6 +2,7 @@
 #include "core/geometry.h"
 #include <QApplication>
 #include <QButtonGroup>
+#include <QCloseEvent>
 #include <QEvent>
 #include <QFrame>
 #include <QGridLayout>
@@ -269,7 +270,8 @@ CaptureOverlay::CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWrit
     m_settingsSaveTimer.setInterval(400);
     connect(&m_settingsSaveTimer,&QTimer::timeout,this,[this] { saveStyleSettings(); });
     connect(m_document.undoStack(), &QUndoStack::indexChanged, this, [this] {
-        m_selected = -1; m_undoButton->setEnabled(m_document.undoStack()->canUndo());
+        if (selectedIndex()<0) m_selectedId=0;
+        syncSelectedStyle(); m_undoButton->setEnabled(m_document.undoStack()->canUndo());
         m_redoButton->setEnabled(m_document.undoStack()->canRedo()); update();
     });
     connect(qApp, &QGuiApplication::screenRemoved, this, [this](QScreen *) { cancelCapture(); });
@@ -324,8 +326,8 @@ void CaptureOverlay::buildToolbar() {
         m_widthButton->setText(QStringLiteral("粗细 %1").arg(n));
         if (m_textEditor) {
             applyEditorTextStyle();
-        } else if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool!=Tool::Text) {
-            const int i=m_selected; auto item=m_document.items()[i]; item.width=n;
+        } else if (selectedIndex()>=0 && selectedIndex()<m_document.items().size() && m_document.items()[selectedIndex()].tool!=Tool::Text) {
+            const int i=selectedIndex(); auto item=m_document.items()[i]; item.width=n;
             applyStyleChange(i,item);
         }
     });
@@ -334,8 +336,8 @@ void CaptureOverlay::buildToolbar() {
         m_fontButton->setText(QStringLiteral("文字 %1").arg(n));
         if (m_textEditor) {
             applyEditorTextStyle(); resizeTextEditor();
-        } else if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool==Tool::Text) {
-            const int i=m_selected; auto item=m_document.items()[i]; item.fontSize=n; resizeTextAnnotation(item);
+        } else if (selectedIndex()>=0 && selectedIndex()<m_document.items().size() && m_document.items()[selectedIndex()].tool==Tool::Text) {
+            const int i=selectedIndex(); auto item=m_document.items()[i]; item.fontSize=n; resizeTextAnnotation(item);
             applyStyleChange(i,item);
         }
     });
@@ -345,8 +347,8 @@ void CaptureOverlay::buildToolbar() {
         m_fontWeight=n; m_settingsSaveTimer.start();
         if (m_textEditor) {
             applyEditorTextStyle(); resizeTextEditor();
-        } else if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool==Tool::Text) {
-            const int i=m_selected; auto item=m_document.items()[i]; item.fontWeight=n; resizeTextAnnotation(item);
+        } else if (selectedIndex()>=0 && selectedIndex()<m_document.items().size() && m_document.items()[selectedIndex()].tool==Tool::Text) {
+            const int i=selectedIndex(); auto item=m_document.items()[i]; item.fontWeight=n; resizeTextAnnotation(item);
             applyStyleChange(i,item);
         }
     });
@@ -355,8 +357,8 @@ void CaptureOverlay::buildToolbar() {
     for (QSlider *slider : {m_widthControl,m_fontControl,m_fontWeightControl}) {
         connect(slider,&QSlider::sliderPressed,this,[this,slider] {
             if (m_textEditor) return;
-            if (m_selected<0 || m_selected>=m_document.items().size()) return;
-            const bool applies=(slider==m_widthControl) != (m_document.items()[m_selected].tool==Tool::Text);
+            if (selectedIndex()<0 || selectedIndex()>=m_document.items().size()) return;
+            const bool applies=(slider==m_widthControl) != (m_document.items()[selectedIndex()].tool==Tool::Text);
             if (!applies) return;
             m_document.beginEdit();
         });
@@ -610,8 +612,8 @@ void CaptureOverlay::applyChosenColor(const QColor &color) {
         m_textColor=color;
         m_textEditor->setStyleSheet(QStringLiteral("QTextEdit{border:0;background:rgba(255,255,255,210);color:%1;}").arg(color.name()));
         applyEditorTextStyle();
-    } else if (m_selected>=0 && m_selected<m_document.items().size()) {
-        const int i=m_selected; auto item=m_document.items()[i]; item.color=color; m_document.replace(i,item); m_selected=i; update();
+    } else if (selectedIndex()>=0 && selectedIndex()<m_document.items().size()) {
+        const int i=selectedIndex(); auto item=m_document.items()[i]; item.color=color; m_document.replace(i,item); selectObject(i); update();
     }
     rememberColor(color);
     updatePresetHighlight();
@@ -625,13 +627,36 @@ void CaptureOverlay::positionToolbar() {
     y = qBound(0, y, qMax(0,height()-m_toolbar->height()));
     m_toolbar->move(x,y); m_toolbar->show(); m_toolbar->raise();
 }
+int CaptureOverlay::selectedIndex() const { return m_document.indexOf(m_selectedId); }
+int CaptureOverlay::editingTextIndex() const { return m_document.indexOf(m_editingTextId); }
+void CaptureOverlay::selectObject(int index) {
+    m_selectedId=index>=0 && index<m_document.items().size() ? m_document.items()[index].id : 0;
+}
+void CaptureOverlay::syncSelectedStyle() {
+    const int index=selectedIndex();
+    if (index<0) return;
+    const Annotation &item=m_document.items()[index];
+    const QSignalBlocker widthBlock(m_widthControl),fontBlock(m_fontControl),weightBlock(m_fontWeightControl);
+    m_color=item.color;
+    updateColorSwatch();
+    if (item.tool==Tool::Text) {
+        m_fontSize=item.fontSize; m_fontWeight=item.fontWeight;
+        m_fontControl->setValue(m_fontSize); m_fontWeightControl->setValue(m_fontWeight);
+        m_fontValue->setText(QString::number(m_fontSize)); m_fontWeightValue->setText(QString::number(m_fontWeight));
+        m_fontButton->setText(QStringLiteral("文字 %1").arg(m_fontSize));
+    } else {
+        m_lineWidth=qRound(item.width); m_widthControl->setValue(m_lineWidth);
+        m_widthValue->setText(QString::number(m_lineWidth));
+        m_widthButton->setText(QStringLiteral("粗细 %1").arg(m_lineWidth));
+    }
+}
 void CaptureOverlay::applyStyleChange(int index, const Annotation &item) {
     // 拖动中（会话已开启）就地修改，释放时统一提交为一步撤销；
     // 键盘或滚轮调整没有会话，立即提交为一步撤销。
     const bool editing = m_document.editing();
     if (!editing) m_document.beginEdit();
     m_document.setItemInPlace(index, item);
-    m_selected = index;
+    selectObject(index);
     if (!editing) commitStyleEdit();
     // 样式变化只影响选区内的标注：只重绘选区与该标注覆盖的范围。
     // 否则每滑动一格都要重贴整块虚拟桌面的多屏大图（3 屏时是几十 MB 像素），拖起来会明显发涩。
@@ -642,9 +667,9 @@ void CaptureOverlay::applyStyleChange(int index, const Annotation &item) {
 }
 void CaptureOverlay::commitStyleEdit() {
     if (!m_document.editing()) return;
-    const int selected = m_selected;
+    const AnnotationId selected = m_selectedId;
     m_document.endEdit();
-    m_selected = selected;
+    m_selectedId = selected;
     update();
 }
 void CaptureOverlay::saveStyleSettings() {
@@ -654,7 +679,7 @@ void CaptureOverlay::saveStyleSettings() {
     settings.setValue("annotation/fontSize",m_fontSize);
     settings.setValue("annotation/fontWeight",m_fontWeight);
 }
-void CaptureOverlay::setTool(Tool tool) { m_tool=tool; m_selected=-1; setCursor(tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor); update(); }
+void CaptureOverlay::setTool(Tool tool) { m_tool=tool; m_selectedId=0; setCursor(tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor); update(); }
 QPointF CaptureOverlay::boundedPoint(const QPointF &p) const { return {qBound(0.0,p.x(),double(width())), qBound(0.0,p.y(),double(height()))}; }
 QRectF CaptureOverlay::windowAt(const QPointF &p) const {
     // 窗口矩形是虚拟桌面逻辑坐标，比较前先换算到覆盖层局部坐标。
@@ -689,7 +714,7 @@ QVector<Annotation> CaptureOverlay::previewItems() const {
     auto items=m_document.items();
     if (m_hasPreview) {
         if (m_drag==Drag::MoveObject || m_drag==Drag::ResizeObject || m_drag==Drag::ArrowStart || m_drag==Drag::ArrowEnd) {
-            if (m_selected>=0 && m_selected<items.size()) items[m_selected]=m_preview;
+            if (selectedIndex()>=0 && selectedIndex()<items.size()) items[selectedIndex()]=m_preview;
         } else items.append(m_preview);
     }
     return items;
@@ -748,11 +773,11 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
         p.setPen(QPen(QColor("#1687ef"),2)); p.setBrush(Qt::NoBrush); p.drawRect(m_selection);
         p.setBrush(Qt::white);
         for (const auto &point : handles(m_selection)) p.drawRect(handleRect(point));
-        if (m_selected>=0 && m_selected<m_document.items().size()) {
-            const QRectF box=(m_hasPreview ? m_preview : m_document.items()[m_selected]).bounds();
+        if (selectedIndex()>=0 && selectedIndex()<m_document.items().size()) {
+            const QRectF box=(m_hasPreview ? m_preview : m_document.items()[selectedIndex()]).bounds();
             p.setPen(QPen(QColor("#1687ef"),1,Qt::DashLine)); p.setBrush(Qt::NoBrush); p.drawRect(box);
             p.setBrush(Qt::white);
-            const Annotation &a=(m_hasPreview ? m_preview : m_document.items()[m_selected]);
+            const Annotation &a=(m_hasPreview ? m_preview : m_document.items()[selectedIndex()]);
             if (a.tool==Tool::Arrow) { p.drawRect(handleRect(a.rect.topLeft())); p.drawRect(handleRect(a.rect.bottomRight())); }
             else p.drawRect(handleRect(box.bottomRight()));
         }
@@ -792,9 +817,11 @@ void CaptureOverlay::clearSelection() {
     // 样式编辑会话必须先提交，否则会话会残留在文档里。
     commitStyleEdit();
     m_selection = {};
-    m_selected = -1;
+    m_selectedId = 0;
     m_hoverWindow = {};
     m_toolbar->hide();
+    hidePanels();
+    m_drag=Drag::None; m_hasPreview=false;
     update();
 }
 void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
@@ -806,21 +833,21 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
     commitText(); m_press=boundedPoint(event->position()); m_pointer=m_press;
     if (m_selection.isEmpty()) { m_drag=Drag::NewSelection; m_startRect={}; return; }
     if (m_tool==Tool::Select) {
-        if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool==Tool::Arrow) {
-            const auto &arrow=m_document.items()[m_selected];
+        if (selectedIndex()>=0 && selectedIndex()<m_document.items().size() && m_document.items()[selectedIndex()].tool==Tool::Arrow) {
+            const auto &arrow=m_document.items()[selectedIndex()];
             if (handleRect(arrow.rect.topLeft()).contains(m_press) || handleRect(arrow.rect.bottomRight()).contains(m_press)) {
                 m_drag=handleRect(arrow.rect.topLeft()).contains(m_press) ? Drag::ArrowStart : Drag::ArrowEnd;
                 m_startAnnotation=arrow; return;
             }
         }
-        if (m_selected>=0 && m_selected<m_document.items().size() && handleRect(m_document.items()[m_selected].bounds().bottomRight()).contains(m_press)) {
-            m_drag=Drag::ResizeObject; m_startAnnotation=m_document.items()[m_selected]; m_startRect=m_startAnnotation.bounds(); return;
+        if (selectedIndex()>=0 && selectedIndex()<m_document.items().size() && handleRect(m_document.items()[selectedIndex()].bounds().bottomRight()).contains(m_press)) {
+            m_drag=Drag::ResizeObject; m_startAnnotation=m_document.items()[selectedIndex()]; m_startRect=m_startAnnotation.bounds(); return;
         }
         m_handle=selectionHandleAt(m_press);
-        if (m_handle>=0) { m_selected=-1; m_startRect=m_selection; m_drag=Drag::ResizeSelection; update(); return; }
+        if (m_handle>=0) { m_selectedId=0; m_startRect=m_selection; m_drag=Drag::ResizeSelection; update(); return; }
         const int object=objectAt(m_press);
         if (object>=0) {
-            m_selected=object; m_startAnnotation=m_document.items()[object]; m_color=m_startAnnotation.color; updateColorSwatch();
+            selectObject(object); m_startAnnotation=m_document.items()[object]; m_color=m_startAnnotation.color; updateColorSwatch();
             const QSignalBlocker b1(m_widthControl), b2(m_fontControl), b3(m_fontWeightControl);
             if (m_startAnnotation.tool==Tool::Text) {
                 m_fontSize=m_startAnnotation.fontSize; m_fontWeight=m_startAnnotation.fontWeight;
@@ -832,7 +859,7 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
             }
             m_drag=Drag::MoveObject; update(); return;
         }
-        m_selected=-1; m_startRect=m_selection;
+        m_selectedId=0; m_startRect=m_selection;
         if (m_selection.contains(m_press)) m_drag=Drag::MoveSelection;
         else { clearSelection(); m_drag=Drag::NewSelection; }
     } else if (m_selection.contains(m_press)) {
@@ -868,9 +895,9 @@ void CaptureOverlay::mouseReleaseEvent(QMouseEvent *event) {
         positionToolbar();
     } else if (m_drag==Drag::Draw && m_hasPreview) {
         if (m_preview.tool==Tool::Pen || (m_preview.tool==Tool::Arrow && QLineF(m_preview.rect.topLeft(),m_preview.rect.bottomRight()).length()>=2) ||
-            (m_preview.rect.normalized().width()>=2 && m_preview.rect.normalized().height()>=2)) m_document.add(m_preview);
+            (m_preview.rect.normalized().width()>=2 && m_preview.rect.normalized().height()>=2)) { m_selectedId=m_document.add(m_preview); syncSelectedStyle(); }
     } else if ((m_drag==Drag::MoveObject || m_drag==Drag::ResizeObject || m_drag==Drag::ArrowStart || m_drag==Drag::ArrowEnd) && m_hasPreview && QLineF(m_press,m_pointer).length()>=0.5) {
-        const int selected=m_selected; m_document.replace(selected,m_preview); m_selected=selected;
+        const int selected=selectedIndex(); m_document.replace(selected,m_preview); selectObject(selected);
     }
     m_drag=Drag::None; m_hasPreview=false; update();
 }
@@ -882,7 +909,7 @@ void CaptureOverlay::mouseDoubleClickEvent(QMouseEvent *event) {
     QWidget::mouseDoubleClickEvent(event);
 }
 void CaptureOverlay::startText(const QPointF &point, int existing) {
-    commitText(); m_editingText=existing;
+    commitText(); m_editingTextId=existing>=0 ? m_document.items()[existing].id : 0;
     const qreal textWidth=qMin(220.0,m_selection.width());
     const QPointF anchor(qBound(m_selection.left(),point.x(),m_selection.right()-textWidth),point.y());
     const QRectF bounds=existing>=0 ? m_document.items()[existing].bounds() : QRectF(anchor,QSizeF(textWidth,40));
@@ -955,15 +982,16 @@ void CaptureOverlay::commitText() {
     QTextEdit *editor=m_textEditor; m_textEditor=nullptr;
     const QString text=editor->toPlainText(); const QRectF bounds=editor->geometry(); editor->removeEventFilter(this); editor->deleteLater();
     if (!text.trimmed().isEmpty()) {
-        Annotation a; if (m_editingText>=0 && m_editingText<m_document.items().size()) a=m_document.items()[m_editingText];
+        Annotation a; if (editingTextIndex()>=0) a=m_document.items()[editingTextIndex()];
         else { a.tool=Tool::Text; a.color=m_textColor; }
         a.rect=bounds; a.text=text; a.fontFamily=editor->font().family();
         a.fontSize=editor->font().pixelSize(); a.fontWeight=int(editor->font().weight());
         // 提交的颜色与编辑器预览保持一致。
         a.color=m_textColor;
-        if (m_editingText>=0) m_document.replace(m_editingText,a); else m_document.add(a);
-    } else if (m_editingText>=0) m_document.remove(m_editingText);
-    m_editingText=-1; setFocus(); update();
+        if (editingTextIndex()>=0) { m_document.replace(editingTextIndex(),a); m_selectedId=a.id; }
+        else m_selectedId=m_document.add(a);
+    } else if (editingTextIndex()>=0) m_document.remove(editingTextIndex());
+    m_editingTextId=0; setFocus(); update();
 }
 bool CaptureOverlay::eventFilter(QObject *obj, QEvent *event) {
     if (obj==m_textEditor && event->type()==QEvent::KeyPress) {
@@ -981,23 +1009,71 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *event) {
     }
     if (event->matches(QKeySequence::Undo)) { commitStyleEdit(); m_document.undoStack()->undo(); return; }
     if (event->matches(QKeySequence::Redo)) { commitStyleEdit(); m_document.undoStack()->redo(); return; }
-    if (event->key()==Qt::Key_Delete || event->key()==Qt::Key_Backspace) { if (m_selected>=0) m_document.remove(m_selected); return; }
+    if (event->key()==Qt::Key_Delete || event->key()==Qt::Key_Backspace) { if (selectedIndex()>=0) m_document.remove(selectedIndex()); return; }
     if (event->key()==Qt::Key_Return || event->key()==Qt::Key_Enter) { finishCapture(); return; }
     QWidget::keyPressEvent(event);
 }
-void CaptureOverlay::showError(const QString &message) { QMessageBox::warning(this,QStringLiteral("复制失败"),message); activateWindow(); setFocus(); }
+void CaptureOverlay::showError(const QString &message) {
+    if (!m_errorBanner) {
+        m_errorBanner=new QFrame(this);
+        m_errorBanner->setObjectName("copyErrorBanner");
+        m_errorBanner->setStyleSheet(QStringLiteral("QFrame#copyErrorBanner{background:#fff3e0;border:1px solid #e8a14a;border-radius:6px;} QLabel{color:#6b3800;}"));
+        auto *row=new QHBoxLayout(m_errorBanner);
+        m_errorMessage=new QLabel(m_errorBanner);
+        m_errorMessage->setObjectName("copyErrorMessage");
+        m_errorMessage->setWordWrap(true);
+        row->addWidget(m_errorMessage,1);
+        auto *retry=new QToolButton(m_errorBanner);
+        retry->setObjectName("retryButton");
+        retry->setText(QStringLiteral("重试复制"));
+        row->addWidget(retry);
+        connect(retry,&QToolButton::clicked,this,&CaptureOverlay::finishCapture);
+    }
+    m_errorMessage->setText(message);
+    m_errorBanner->setMaximumWidth(qMax(1,width()-16));
+    m_errorBanner->adjustSize();
+    m_errorBanner->move(qMax(0,(width()-m_errorBanner->width())/2),8);
+    m_errorBanner->show();
+    m_errorBanner->raise();
+    setFocus();
+}
 void CaptureOverlay::finishCapture() {
+    if (m_ending || m_copying) return;
+    m_copying=true;
     commitText();
     commitStyleEdit();
     if (m_settingsSaveTimer.isActive()) { m_settingsSaveTimer.stop(); saveStyleSettings(); }
-    if (m_selection.isEmpty()) return;
+    if (m_selection.isEmpty()) { m_copying=false; return; }
     // 导出走跨屏渲染：选区与标注都换算成虚拟桌面逻辑坐标。
     const QImage image=renderSelection(m_frame.screens,m_selection.translated(m_frame.virtualGeometry.topLeft()),virtualAnnotations());
     QString error;
-    if (image.isNull() || !m_clipboardWriter(image,&error)) { showError(error.isEmpty()?QStringLiteral("无法复制图像，请重试。") : error); return; }
-    emit finished(); close();
+    if (image.isNull() || !m_clipboardWriter(image,&error)) { m_copying=false; showError(error.isEmpty()?QStringLiteral("无法复制图像，请重试。") : error); return; }
+    m_copying=false;
+    endSession();
+    close();
 }
-void CaptureOverlay::cancelCapture() { commitStyleEdit();
+void CaptureOverlay::cancelCapture() { endSession(); close(); }
+void CaptureOverlay::endSession() {
+    if (m_ending) return;
+    m_ending=true;
+    commitStyleEdit();
     if (m_settingsSaveTimer.isActive()) { m_settingsSaveTimer.stop(); saveStyleSettings(); }
-    emit finished(); close(); }
+    hidePanels();
+    if (m_textEditor) {
+        m_textEditor->removeEventFilter(this);
+        delete m_textEditor;
+        m_textEditor=nullptr;
+    }
+    m_hasPreview=false;
+    m_drag=Drag::None;
+    m_caches.clear();
+    m_frame.screens.clear();
+    m_document.undoStack()->clear();
+    m_document.setItemsForCommand({});
+    emit finished();
+}
+void CaptureOverlay::closeEvent(QCloseEvent *event) {
+    endSession();
+    QWidget::closeEvent(event);
+}
 }

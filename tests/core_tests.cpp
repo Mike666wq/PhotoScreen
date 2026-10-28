@@ -72,6 +72,30 @@ private slots:
         doc.undoStack()->undo(); QCOMPARE(doc.items().size(),0);
         doc.undoStack()->redo(); QCOMPARE(doc.items().size(),1);
     }
+    void stableIdentityAndNoOpHistory() {
+        AnnotationDocument doc;
+        Annotation a; a.rect=QRectF(10,10,20,20);
+        const AnnotationId first=doc.add(a);
+        const AnnotationId second=doc.add(a);
+        QVERIFY(first!=0); QVERIFY(second!=first);
+        doc.remove(0);
+        QCOMPARE(doc.indexOf(second),0);
+        doc.undoStack()->undo();
+        QCOMPARE(doc.indexOf(first),0); QCOMPARE(doc.indexOf(second),1);
+        const int depth=doc.undoDepth();
+        doc.replace(1,doc.items()[1]);
+        QCOMPARE(doc.undoDepth(),depth);
+        doc.beginEdit();
+        Annotation changed=doc.items()[1]; changed.width=12;
+        doc.setItemInPlace(1,changed);
+        doc.cancelEdit();
+        QCOMPARE(doc.items()[1].width,3.0);
+        QCOMPARE(doc.undoDepth(),depth);
+        doc.undoStack()->undo();
+        QCOMPARE(doc.indexOf(second),-1);
+        const AnnotationId third=doc.add(a);
+        QVERIFY(third!=second); QVERIFY(third!=first);
+    }
     void arrowLengthAndThickness() {
         Annotation arrow; arrow.tool=Tool::Arrow; arrow.color=QColor("#ff3b3b"); arrow.width=3;
         arrow.rect=QRectF(QPointF(20,100),QPointF(120,100));

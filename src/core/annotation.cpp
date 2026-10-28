@@ -34,7 +34,7 @@ static QRectF exactPointsBox(const QVector<QPointF> &points) {
     return QRectF(QPointF(minX,minY), QPointF(maxX,maxY));
 }
 static bool sameAnnotation(const Annotation &a, const Annotation &b) {
-    return a.tool==b.tool && a.rect==b.rect && a.points==b.points && a.color==b.color
+    return a.id==b.id && a.tool==b.tool && a.rect==b.rect && a.points==b.points && a.color==b.color
         && qFuzzyCompare(a.width+1,b.width+1) && a.fontSize==b.fontSize && a.fontWeight==b.fontWeight
         && a.fontFamily==b.fontFamily && a.text==b.text;
 }
@@ -146,14 +146,25 @@ private:
     AnnotationDocument *m_doc;
     QVector<Annotation> m_before, m_after;
 };
-void AnnotationDocument::add(const Annotation &item) {
+int AnnotationDocument::indexOf(AnnotationId id) const {
+    if (!id) return -1;
+    for (qsizetype i=0; i<m_items.size(); ++i) if (m_items[i].id==id) return int(i);
+    return -1;
+}
+AnnotationId AnnotationDocument::add(const Annotation &item) {
     endEdit();
-    auto after = m_items; after.append(item); m_undo.push(new Change(this, m_items, after));
+    Annotation added=item;
+    added.id=m_nextId++;
+    auto after = m_items; after.append(added); m_undo.push(new Change(this, m_items, after));
+    return added.id;
 }
 void AnnotationDocument::replace(int index, const Annotation &item) {
     if (index < 0 || index >= m_items.size()) return;
     endEdit();
-    auto after = m_items; after[index] = item; m_undo.push(new Change(this, m_items, after));
+    Annotation replacement=item;
+    replacement.id=m_items[index].id;
+    if (sameAnnotation(m_items[index],replacement)) return;
+    auto after = m_items; after[index] = replacement; m_undo.push(new Change(this, m_items, after));
 }
 void AnnotationDocument::remove(int index) {
     if (index < 0 || index >= m_items.size()) return;
@@ -175,7 +186,15 @@ void AnnotationDocument::endEdit() {
 }
 void AnnotationDocument::setItemInPlace(int index, const Annotation &item) {
     if (index < 0 || index >= m_items.size()) return;
+    const AnnotationId id=m_items[index].id;
     m_items[index] = item;
+    m_items[index].id=id;
+}
+void AnnotationDocument::cancelEdit() {
+    if (!m_editing) return;
+    m_items=std::move(m_editBase);
+    m_editBase.clear();
+    m_editing=false;
 }
 void configureTextDocument(QTextDocument &document, const Annotation &a) {
     QFont font=QApplication::font();

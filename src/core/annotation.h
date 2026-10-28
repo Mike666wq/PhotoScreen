@@ -14,7 +14,9 @@ class QTextDocument;
 
 namespace photo {
 enum class Tool { Select, Rectangle, Ellipse, Arrow, Pen, Text, Mosaic };
+using AnnotationId = quint64;
 struct Annotation {
+    AnnotationId id = 0;
     Tool tool = Tool::Rectangle;
     QRectF rect;
     QVector<QPointF> points;
@@ -31,7 +33,8 @@ struct Annotation {
 class AnnotationDocument {
 public:
     const QVector<Annotation> &items() const { return m_items; }
-    void add(const Annotation &item);
+    AnnotationId add(const Annotation &item);
+    int indexOf(AnnotationId id) const;
     void replace(int index, const Annotation &item);
     void remove(int index);
     QUndoStack *undoStack() { return &m_undo; }
@@ -42,6 +45,7 @@ public:
     // 连续拖动滑块因此只产生一步撤销，且会话不会泄漏到撤销栈状态里。
     void beginEdit();
     void endEdit();
+    void cancelEdit();
     bool editing() const { return m_editing; }
     void setItemInPlace(int index, const Annotation &item);
 private:
@@ -49,6 +53,7 @@ private:
     QUndoStack m_undo;
     bool m_editing = false;
     QVector<Annotation> m_editBase;
+    AnnotationId m_nextId = 1;
 };
 void drawAnnotation(QPainter &painter, const Annotation &annotation);
 void configureTextDocument(QTextDocument &document, const Annotation &annotation);

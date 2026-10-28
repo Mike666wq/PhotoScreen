@@ -23,6 +23,7 @@
 #include <QSlider>
 #include <QSizePolicy>
 #include <QStyle>
+#include <QStyleOptionSlider>
 #include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextEdit>
@@ -47,12 +48,70 @@ QVector<QPointF> handles(const QRectF &r) {
 }
 // 自绘滑块：轨道、已选部分、刻度、手柄全部显式绘制，不依赖平台主题，
 // macOS 与 Windows 表现一致。轨道是 4px 圆角矩形，手柄是 14px 圆形。
+// 关键点：轨道、手柄、命中、取值全部用 geometry() 这一套几何，
+// 视觉与手感必然一致，不会出现「看到的」和「摸到的」不是同一个位置。
 class StyledSlider : public QSlider {
 public:
     explicit StyledSlider(QWidget *parent=nullptr) : QSlider(Qt::Horizontal,parent) { setMinimumHeight(26); }
     // 轨道填充渐变（色相条、明度条用）；设置后不再画“已选部分”填充。
     void setGrooveGradient(const QLinearGradient &gradient) { m_gradient=gradient; m_hasGradient=true; update(); }
+    // 手柄中心 x 坐标：与 paintEvent 同一套计算，供测试核对命中位置。
+    int handleCenterX() const { return geometry().handleCenter; }
 protected:
+    struct SliderGeometry {
+        QRect groove;        // 轨道在控件内的水平范围
+        int handleLength;    // 手柄直径，与 QSlider 命中判定用的是同一个值
+        int handleCenter;    // 手柄中心的 x 坐标
+        int handleRadius;
+    };
+    SliderGeometry geometry() const {
+        QStyleOptionSlider option; initStyleOption(&option);
+        const int handleRadius=7;
+        QRect groove=style()->subControlRect(QStyle::CC_Slider,&option,QStyle::SC_SliderGroove,this);
+        if (groove.width()<=0) groove=QRect(handleRadius,0,qMax(1,width()-2*handleRadius),1);
+        // 手柄长度固定：几何完全自洽，也不依赖各平台 style 的像素度量枚举。
+        const int handleLength=2*handleRadius;
+        const int span=qMax(1,groove.width());
+        // sliderPositionFromValue(min, max, value, span, offset)：offset 必须是 0，
+        // 传错会让手柄整体偏移一整个轨道长度，看上去「拖不动」。
+        const int position=QStyle::sliderPositionFromValue(minimum(),maximum(),value(),span,0);
+        return SliderGeometry{groove,handleLength,groove.left()+position+handleLength/2,handleRadius};
+    }
+    // x 坐标 → 取值：按浮点比例算，没有整数除法造成的台阶。
+    // 换算与 QSlider 内部一致：轨道位置 = 鼠标 x - 手柄半径 - 轨道左边界。
+    int valueAtX(int x) const {
+        const SliderGeometry geo=geometry();
+        if (maximum()<=minimum()) return minimum();
+        const qreal span=qMax(1,geo.groove.width());
+        const qreal pos=qBound(qreal(0),qreal(x-geo.handleLength/2-geo.groove.left()),span);
+        return minimum()+qRound(pos/span*(maximum()-minimum()));
+    }
+    // 鼠标交互自己算值：QSlider 默认按下时会跳到点击位置，而绘制、命中、取值
+    // 分别用各自的坐标，换算不一致时就会「按住了却自己动了」。
+    // 这里三处统一用 geometry()，点手柄不改值，点轨道跳到该处，拖动跟手。
+    void mousePressEvent(QMouseEvent *event) override {
+        if (event->button()!=Qt::LeftButton) { QSlider::mousePressEvent(event); return; }
+        m_dragging=true;
+        // 先发 sliderPressed 再改值：业务在按下时开启编辑会话，
+        // 值变化落在会话内，拖一次只产生一步撤销。
+        emit sliderPressed();
+        const SliderGeometry geo=geometry();
+        if (qAbs(event->pos().x()-geo.handleCenter)>geo.handleRadius) setValue(valueAtX(event->pos().x()));
+        event->accept();
+    }
+    void mouseMoveEvent(QMouseEvent *event) override {
+        if (!m_dragging) { QSlider::mouseMoveEvent(event); return; }
+        setValue(valueAtX(event->pos().x()));
+        event->accept();
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        if (m_dragging && event->button()==Qt::LeftButton) {
+            m_dragging=false;
+            emit sliderReleased();
+            event->accept(); return;
+        }
+        QSlider::mouseReleaseEvent(event);
+    }
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
         // 先清空，避免上一次绘制的轨道与手柄残留。
@@ -60,35 +119,37 @@ protected:
         p.fillRect(rect(),Qt::transparent);
         p.setCompositionMode(QPainter::CompositionMode_SourceOver);
         p.setRenderHint(QPainter::Antialiasing);
-        const int handleRadius=7, grooveHeight=4;
-        const int travel=qMax(1,width()-2*handleRadius);
-        const QRect groove(handleRadius,(height()-grooveHeight)/2,travel,grooveHeight);
-        const int position=QStyle::sliderPositionFromValue(minimum(),maximum(),value(),travel,groove.width());
+        const SliderGeometry geo=geometry();
+        const int grooveHeight=4;
+        const QRect groove(geo.groove.left(),(height()-grooveHeight)/2,geo.groove.width(),grooveHeight);
+        const int span=qMax(1,groove.width());
         // 轨道
         p.setPen(QPen(QColor("#9aa0a6"),1));
         p.setBrush(m_hasGradient ? QBrush(m_gradient) : QBrush(QColor("#dfe1e5")));
         p.drawRoundedRect(groove,2,2);
-        // 已选部分
-        if (!m_hasGradient && position>0) {
+        // 已选部分：到当前手柄为止
+        const int selected=geo.handleCenter-groove.left();
+        if (!m_hasGradient && selected>0) {
             p.setPen(Qt::NoPen); p.setBrush(QColor("#1687ef"));
-            p.drawRoundedRect(QRect(groove.left(),groove.top(),position,groove.height()),2,2);
+            p.drawRoundedRect(QRect(groove.left(),groove.top(),selected,groove.height()),2,2);
         }
         // 刻度
         if (tickPosition()!=NoTicks) {
             const int step=tickInterval()>0?tickInterval():qMax(1,(maximum()-minimum())/10);
             p.setPen(QPen(QColor("#8a8f96"),1));
             for (int v=minimum(); v<=maximum(); v+=step) {
-                const int x=groove.left()+QStyle::sliderPositionFromValue(minimum(),maximum(),v,travel,groove.width());
+                const int x=groove.left()+QStyle::sliderPositionFromValue(minimum(),maximum(),v,span,0);
                 p.drawLine(x,groove.bottom()+4,x,groove.bottom()+8);
             }
         }
         // 手柄
         p.setPen(QPen(QColor("#5f6368"),1)); p.setBrush(QColor("#ffffff"));
-        p.drawEllipse(QPoint(groove.left()+position,groove.center().y()),handleRadius,handleRadius);
+        p.drawEllipse(QPoint(geo.handleCenter,groove.center().y()),geo.handleRadius,geo.handleRadius);
     }
 private:
     QLinearGradient m_gradient;
     bool m_hasGradient=false;
+    bool m_dragging=false;   // 自己接管鼠标拖动，避免与 QSlider 内部状态打架
 };
 // 参数面板里的一行：名称 + 自绘滑块 + 紧贴滑块右端的数值。
 StyledSlider *addStyledSlider(QHBoxLayout *row, const QString &title, int minimum, int maximum, int value, QLabel **valueLabel) {
@@ -178,6 +239,13 @@ QIcon toolIcon(Tool tool) {
     return QIcon(pixmap);
 }
 }
+// 自绘滑块的手柄中心 x 坐标；不是自绘滑块时返回 -1。
+// 放在匿名 namespace 之外：测试目标需要链接到这个符号（内部链接会链不上）。
+int sliderHandleCenterX(const QSlider *slider) {
+    if (!slider) return -1;
+    if (auto *styled=dynamic_cast<const StyledSlider *>(slider)) return styled->handleCenterX();
+    return -1;
+}
 CaptureOverlay::CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWriter writer)
     : QWidget(nullptr), m_frame(std::move(frame)), m_clipboardWriter(writer ? std::move(writer) : ClipboardWriter(writeClipboard)), m_screen(screen) {
     setAttribute(Qt::WA_DeleteOnClose);
@@ -195,6 +263,11 @@ CaptureOverlay::CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWrit
     m_fontSize = settings.value("annotation/fontSize", 18).toInt();
     m_fontWeight = qBound(100,settings.value("annotation/fontWeight", 400).toInt(),900);
     buildToolbar();
+    // 滑块拖动时每变化一格就写一次设置（Windows 是同步写注册表），会明显卡顿。
+    // 改为停止变化 400ms 后统一落盘；覆盖层关闭时也会补写一次。
+    m_settingsSaveTimer.setSingleShot(true);
+    m_settingsSaveTimer.setInterval(400);
+    connect(&m_settingsSaveTimer,&QTimer::timeout,this,[this] { saveStyleSettings(); });
     connect(m_document.undoStack(), &QUndoStack::indexChanged, this, [this] {
         m_selected = -1; m_undoButton->setEnabled(m_document.undoStack()->canUndo());
         m_redoButton->setEnabled(m_document.undoStack()->canRedo()); update();
@@ -247,7 +320,7 @@ void CaptureOverlay::buildToolbar() {
     buildStylePanel();
     buildColorPanel();
     connect(m_widthControl, &QSlider::valueChanged, this, [this](int n) {
-        m_lineWidth=n; QSettings().setValue("annotation/width",n);
+        m_lineWidth=n; m_settingsSaveTimer.start();
         m_widthButton->setText(QStringLiteral("粗细 %1").arg(n));
         if (m_textEditor) {
             applyEditorTextStyle();
@@ -257,7 +330,7 @@ void CaptureOverlay::buildToolbar() {
         }
     });
     connect(m_fontControl, &QSlider::valueChanged, this, [this](int n) {
-        m_fontSize=n; QSettings().setValue("annotation/fontSize",n);
+        m_fontSize=n; m_settingsSaveTimer.start();
         m_fontButton->setText(QStringLiteral("文字 %1").arg(n));
         if (m_textEditor) {
             applyEditorTextStyle(); resizeTextEditor();
@@ -269,7 +342,7 @@ void CaptureOverlay::buildToolbar() {
     connect(m_fontWeightControl, &QSlider::valueChanged, this, [this](int n) {
         const int snapped=qBound(100,((n+50)/100)*100,900);
         if (n!=snapped) { m_fontWeightControl->setValue(snapped); return; }
-        m_fontWeight=n; QSettings().setValue("annotation/fontWeight",n);
+        m_fontWeight=n; m_settingsSaveTimer.start();
         if (m_textEditor) {
             applyEditorTextStyle(); resizeTextEditor();
         } else if (m_selected>=0 && m_selected<m_document.items().size() && m_document.items()[m_selected].tool==Tool::Text) {
@@ -560,7 +633,12 @@ void CaptureOverlay::applyStyleChange(int index, const Annotation &item) {
     m_document.setItemInPlace(index, item);
     m_selected = index;
     if (!editing) commitStyleEdit();
-    update();
+    // 样式变化只影响选区内的标注：只重绘选区与该标注覆盖的范围。
+    // 否则每滑动一格都要重贴整块虚拟桌面的多屏大图（3 屏时是几十 MB 像素），拖起来会明显发涩。
+    // 标注坐标与 m_selection 一样都是覆盖层局部逻辑坐标，无需再平移。
+    const QRectF localBounds=item.bounds();
+    const QRect dirty=m_selection.united(localBounds).adjusted(-8,-8,8,8).toAlignedRect().intersected(rect());
+    update(dirty);
 }
 void CaptureOverlay::commitStyleEdit() {
     if (!m_document.editing()) return;
@@ -568,6 +646,12 @@ void CaptureOverlay::commitStyleEdit() {
     m_document.endEdit();
     m_selected = selected;
     update();
+}
+void CaptureOverlay::saveStyleSettings() {
+    QSettings settings;
+    settings.setValue("annotation/width",m_lineWidth);
+    settings.setValue("annotation/fontSize",m_fontSize);
+    settings.setValue("annotation/fontWeight",m_fontWeight);
 }
 void CaptureOverlay::setTool(Tool tool) { m_tool=tool; m_selected=-1; setCursor(tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor); update(); }
 QPointF CaptureOverlay::boundedPoint(const QPointF &p) const { return {qBound(0.0,p.x(),double(width())), qBound(0.0,p.y(),double(height()))}; }
@@ -904,6 +988,7 @@ void CaptureOverlay::showError(const QString &message) { QMessageBox::warning(th
 void CaptureOverlay::finishCapture() {
     commitText();
     commitStyleEdit();
+    if (m_settingsSaveTimer.isActive()) { m_settingsSaveTimer.stop(); saveStyleSettings(); }
     if (m_selection.isEmpty()) return;
     // 导出走跨屏渲染：选区与标注都换算成虚拟桌面逻辑坐标。
     const QImage image=renderSelection(m_frame.screens,m_selection.translated(m_frame.virtualGeometry.topLeft()),virtualAnnotations());
@@ -911,5 +996,7 @@ void CaptureOverlay::finishCapture() {
     if (image.isNull() || !m_clipboardWriter(image,&error)) { showError(error.isEmpty()?QStringLiteral("无法复制图像，请重试。") : error); return; }
     emit finished(); close();
 }
-void CaptureOverlay::cancelCapture() { commitStyleEdit(); emit finished(); close(); }
+void CaptureOverlay::cancelCapture() { commitStyleEdit();
+    if (m_settingsSaveTimer.isActive()) { m_settingsSaveTimer.stop(); saveStyleSettings(); }
+    emit finished(); close(); }
 }

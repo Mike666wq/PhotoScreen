@@ -107,12 +107,20 @@ private slots:
         QTest::mouseClick(overlay->findChild<QToolButton *>("tool_3"),Qt::LeftButton);
         QCOMPARE(width->value(),12);
         QTest::qWait(450);
-        const QStringList keysBefore=settings.allKeys();
+        QTRY_COMPARE_WITH_TIMEOUT(overlay->persistedLineWidth(),12,2000);
+        auto toolSettings=[] {
+            QSettings settings;
+            settings.beginGroup(QStringLiteral("annotation/tools"));
+            QVariantMap values;
+            for (const QString &key : settings.allKeys()) values.insert(key,settings.value(key));
+            return values;
+        };
+        const QVariantMap preferencesBefore=toolSettings();
         QTest::mouseClick(overlay->findChild<QToolButton *>("tool_0"),Qt::LeftButton);
         QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(50,200));
         QCOMPARE(width->value(),2);
         QTest::qWait(450);
-        QCOMPARE(settings.allKeys(),keysBefore);
+        QCOMPARE(toolSettings(),preferencesBefore);
         QCOMPARE(settings.value("annotation/tools/arrow/width").toInt(),12);
         QCOMPARE(settings.value("annotation/tools/rectangle/width").toInt(),2);
         QCOMPARE(settings.value("annotation/tools/arrow/color").toString(),QStringLiteral("#ff3b3b"));

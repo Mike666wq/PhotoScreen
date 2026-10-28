@@ -107,12 +107,20 @@ private slots:
         QTest::mouseClick(overlay->findChild<QToolButton *>("tool_3"),Qt::LeftButton);
         QCOMPARE(width->value(),12);
         QTest::qWait(450);
-        const QStringList keysBefore=settings.allKeys();
+        QTRY_COMPARE_WITH_TIMEOUT(overlay->persistedLineWidth(),12,2000);
+        auto toolSettings=[] {
+            QSettings settings;
+            settings.beginGroup(QStringLiteral("annotation/tools"));
+            QVariantMap values;
+            for (const QString &key : settings.allKeys()) values.insert(key,settings.value(key));
+            return values;
+        };
+        const QVariantMap preferencesBefore=toolSettings();
         QTest::mouseClick(overlay->findChild<QToolButton *>("tool_0"),Qt::LeftButton);
         QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(50,200));
         QCOMPARE(width->value(),2);
         QTest::qWait(450);
-        QCOMPARE(settings.allKeys(),keysBefore);
+        QCOMPARE(toolSettings(),preferencesBefore);
         QCOMPARE(settings.value("annotation/tools/arrow/width").toInt(),12);
         QCOMPARE(settings.value("annotation/tools/rectangle/width").toInt(),2);
         QCOMPARE(settings.value("annotation/tools/arrow/color").toString(),QStringLiteral("#ff3b3b"));
@@ -176,6 +184,80 @@ private slots:
                 QCOMPARE(slider->value(),target);
             }
         }
+    }
+    void textEscapeCommitsDraftAndNextEscapeCancelsCapture() {
+        int writes=0;
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[&](const QImage &,QString *) { ++writes; return true; });
+        QSignalSpy finished(overlay,&CaptureOverlay::finished);
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_5"),Qt::LeftButton);
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QInputMethodEvent input; input.setCommitString(QStringLiteral("保留这段文字")); QApplication::sendEvent(editor,&input);
+        QVERIFY(overlay->annotations().isEmpty());
+        QTest::keyClick(editor,Qt::Key_Escape);
+        QCOMPARE(finished.count(),0); QCOMPARE(overlay->annotations().size(),1);
+        QCOMPARE(overlay->annotations().first().text,QStringLiteral("保留这段文字"));
+        QVERIFY(!overlay->findChild<QFrame *>("stylePanel")->isVisible());
+        QTest::keyClick(overlay,Qt::Key_Escape);
+        QCOMPARE(finished.count(),1); QCOMPARE(writes,0);
+    }
+    void textDraftUndoIsSeparateAndUnchangedCommitIsNoOp() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_3"),Qt::LeftButton);
+        selectArea(overlay,QPoint(50,180),QPoint(300,200));
+        const int depth=overlay->undoDepth();
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_5"),Qt::LeftButton);
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QInputMethodEvent input; input.setCommitString(QStringLiteral("Draft")); QApplication::sendEvent(editor,&input);
+        QTest::keyClick(editor,Qt::Key_Z,Qt::ControlModifier);
+        QVERIFY(editor->toPlainText().isEmpty()); QCOMPARE(overlay->undoDepth(),depth); QCOMPARE(overlay->annotations().size(),1);
+        QTest::keyClick(editor,Qt::Key_Z,Qt::ControlModifier|Qt::ShiftModifier);
+        QCOMPARE(editor->toPlainText(),QStringLiteral("Draft"));
+        QTest::keyClick(editor,Qt::Key_Escape);
+        QCOMPARE(overlay->undoDepth(),depth+1); QCOMPARE(overlay->annotations().size(),2);
+        const Annotation original=overlay->annotations().last();
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_0"),Qt::LeftButton);
+        QTest::mouseDClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(55,60));
+        auto *draft=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(draft);
+        QCOMPARE(overlay->annotations().last().text,original.text);
+        QTest::keyClick(draft,Qt::Key_Escape);
+        QCOMPARE(overlay->undoDepth(),depth+1); QCOMPARE(overlay->annotations().last().id,original.id);
+        QTest::keyClick(overlay,Qt::Key_Z,Qt::ControlModifier);
+        QCOMPARE(overlay->annotations().size(),1);
+    }
+    void preeditEscapeDoesNotCloseTextOrCapture() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        QSignalSpy finished(overlay,&CaptureOverlay::finished);
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_5"),Qt::LeftButton);
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QInputMethodEvent preedit(QStringLiteral("ni"),{}); QApplication::sendEvent(editor,&preedit);
+        QTest::keyClick(editor,Qt::Key_Escape);
+        QVERIFY(editor->isVisible()); QCOMPARE(finished.count(),0); QVERIFY(overlay->annotations().isEmpty());
+        QInputMethodEvent committed; committed.setCommitString(QStringLiteral("你好")); QApplication::sendEvent(editor,&committed);
+        QTest::keyClick(editor,Qt::Key_Return);
+        QVERIFY(editor->toPlainText().contains(QLatin1Char('\n')));
+        QTest::keyClick(editor,Qt::Key_Escape);
+        QCOMPARE(overlay->annotations().first().text,QStringLiteral("你好\n"));
+    }
+    void overflowingTextKeepsAnchorAndFullContents() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(250,160));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_5"),Qt::LeftButton);
+        overlay->findChild<QSlider *>("fontControl")->setValue(34);
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,130));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QInputMethodEvent input; input.setCommitString(QStringLiteral("第一行\n第二行\n第三行\n第四行")); QApplication::sendEvent(editor,&input);
+        QCOMPARE(editor->pos(),QPoint(40,130));
+        auto *hint=overlay->findChild<QLabel *>("textOverflowHint"); QVERIFY(hint); QVERIFY(hint->isVisible());
+        const QString full=editor->toPlainText(); QTest::keyClick(editor,Qt::Key_Escape);
+        QCOMPARE(overlay->annotations().first().text,full);
+        QCOMPARE(overlay->annotations().first().rect.topLeft(),QPointF(40,130));
+        QVERIFY(overlay->annotations().first().rect.bottom()>160);
     }
     void releasePositionAndCopy() {
         QImage copied; int writes=0;
@@ -646,8 +728,7 @@ private slots:
         auto *preset=overlay->findChild<QToolButton *>("preset_1"); QVERIFY(preset);   // #ff6b6b
         preset->click();
         // 预设色写入设置：颜色以十六进制字符串存放，跨后端行为一致。
-        QTest::qWait(450);
-        QCOMPARE(QSettings().value("annotation/tools/rectangle/color").toString(),QStringLiteral("#ff6b6b"));
+        QTRY_COMPARE_WITH_TIMEOUT(QSettings().value("annotation/tools/rectangle/color").toString(),QStringLiteral("#ff6b6b"),3000);
         // 工具栏色块按钮的图标随之更新
         QVERIFY(colorButton->icon().cacheKey()!=before);
         QTest::keyClick(overlay,Qt::Key_Escape);
@@ -684,8 +765,7 @@ private slots:
         QVERIFY(recent->isEnabled());
         // 点最近使用的第一个色块能取回刚才的颜色。
         recent->click();
-        QTest::qWait(450);
-        QCOMPARE(QSettings().value("annotation/tools/rectangle/color").toString(),QStringLiteral("#00b050"));
+        QTRY_COMPARE_WITH_TIMEOUT(QSettings().value("annotation/tools/rectangle/color").toString(),QStringLiteral("#00b050"),3000);
         QTest::keyClick(overlay,Qt::Key_Escape);
     }
     void overlayCoversWholeVirtualDesktop() {

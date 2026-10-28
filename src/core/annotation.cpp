@@ -1,5 +1,6 @@
 #include "annotation.h"
 #include "geometry.h"
+#include <QAbstractTextDocumentLayout>
 #include <QPainter>
 #include <QPainterPathStroker>
 #include <QApplication>
@@ -223,6 +224,11 @@ void configureTextDocument(QTextDocument &document, const Annotation &a) {
     format.setFont(font);
     format.setForeground(a.color);
     cursor.mergeCharFormat(format);
+}
+QSizeF textLayoutSize(const Annotation &annotation) {
+    QTextDocument document;
+    configureTextDocument(document,annotation);
+    return QSizeF(annotation.rect.normalized().width(),qMax(24,qCeil(document.documentLayout()->documentSize().height())+2));
 }
 void drawAnnotation(QPainter &p, const Annotation &a) {
     p.save();

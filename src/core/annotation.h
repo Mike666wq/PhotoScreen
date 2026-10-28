@@ -64,6 +64,7 @@ private:
 };
 void drawAnnotation(QPainter &painter, const Annotation &annotation);
 void configureTextDocument(QTextDocument &document, const Annotation &annotation);
+QSizeF textLayoutSize(const Annotation &annotation);
 QPainterPath arrowPath(const Annotation &annotation);
 bool annotationContains(const Annotation &annotation, const QPointF &point, qreal tolerance = 5);
 struct SelectionMetrics {

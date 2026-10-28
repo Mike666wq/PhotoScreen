@@ -74,6 +74,9 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPHOTOSCREEN_VERSION=${{ steps.version.outputs.version }} "${extra[@]}"
       - name: Build
         run: cmake --build build --parallel 2
+      - name: Prepare pinned regression font
+        shell: bash
+        run: python ci/prepare_test_font.py
       - name: Test
         working-directory: build
         run: ctest --output-on-failure --output-junit test-results.xml

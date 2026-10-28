@@ -26,7 +26,7 @@ add_library(photoscreen_core STATIC
   src/core/screen.h
 )
 target_include_directories(photoscreen_core PUBLIC src)
-target_link_libraries(photoscreen_core PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets)
+target_link_libraries(photoscreen_core PUBLIC Qt6::Core Qt6::Gui)
 
 set(APP_SOURCES
   src/main.cpp
@@ -46,7 +46,7 @@ else()
 endif()
 
 qt_add_executable(PhotoScreen WIN32 MACOSX_BUNDLE ${APP_SOURCES})
-target_link_libraries(PhotoScreen PRIVATE photoscreen_core)
+target_link_libraries(PhotoScreen PRIVATE photoscreen_core Qt6::Widgets)
 target_compile_definitions(PhotoScreen PRIVATE PHOTOSCREEN_VERSION="${PROJECT_VERSION}")
 if(APPLE)
   target_link_libraries(PhotoScreen PRIVATE photoscreen_macimage)
@@ -74,9 +74,9 @@ if(BUILD_TESTING)
   add_test(NAME photoscreen_core COMMAND photoscreen_tests -o ${CMAKE_BINARY_DIR}/reports/photoscreen_core.txt,txt)
   set_tests_properties(photoscreen_core PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
   add_executable(photoscreen_overlay_tests tests/overlay_tests.cpp tests/fake_platform.cpp src/captureoverlay.cpp src/captureoverlay.h)
-  target_link_libraries(photoscreen_overlay_tests PRIVATE photoscreen_core Qt6::Test)
+  target_link_libraries(photoscreen_overlay_tests PRIVATE photoscreen_core Qt6::Test Qt6::Widgets)
   add_test(NAME photoscreen_overlay COMMAND photoscreen_overlay_tests -o ${CMAKE_BINARY_DIR}/reports/photoscreen_overlay.txt,txt)
-  set_tests_properties(photoscreen_overlay PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  set_tests_properties(photoscreen_overlay PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PHOTOSCREEN_REPORT_DIR=${CMAKE_BINARY_DIR}/reports")
   add_executable(photoscreen_visual_report tests/visual_report.cpp)
   target_link_libraries(photoscreen_visual_report PRIVATE photoscreen_core)
   add_test(NAME photoscreen_visual_report COMMAND photoscreen_visual_report)

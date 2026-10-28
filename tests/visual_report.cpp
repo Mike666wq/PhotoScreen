@@ -1,11 +1,15 @@
 #include "core/annotation.h"
-#include <QApplication>
+#include "report_font.h"
+#include <QGuiApplication>
 #include <QDir>
 #include <QPainter>
 #include <QtMath>
 
 int main(int argc, char **argv) {
-    QApplication app(argc,argv);
+    QGuiApplication app(argc,argv);
+    QCoreApplication::setOrganizationName(QStringLiteral("PhotoScreenTests"));
+    QCoreApplication::setApplicationName(QStringLiteral("VisualReport"));
+    if (!loadReportFont()) return 1;
     const QString outputDir=qEnvironmentVariable("PHOTOSCREEN_REPORT_DIR");
     if (outputDir.isEmpty() || !QDir().mkpath(outputDir)) return 1;
     QImage image(1200,800,QImage::Format_RGB32); image.fill(Qt::white);
@@ -49,5 +53,17 @@ int main(int argc, char **argv) {
         textPainter.drawText(QPointF(a.rect.left(),a.rect.bottom()+18),names[i]);
     }
     textPainter.end();
-    return textImage.save(outputDir+QStringLiteral("/text-size-weight.png")) ? 0 : 1;
+    if (!textImage.save(outputDir+QStringLiteral("/text-size-weight.png"))) return 1;
+    QImage source(800,360,QImage::Format_ARGB32_Premultiplied); source.fill(QColor("#eef3fa"));
+    QPainter fixture(&source); fixture.setPen(QColor("#26374e"));
+    QFont fixtureFont=fixture.font(); fixtureFont.setPixelSize(22); fixture.setFont(fixtureFont);
+    fixture.drawText(QPointF(30,40),QStringLiteral("合成图：先画箭头，再打马赛克，最后写清晰文字"));
+    fixture.end();
+    photo::Annotation arrow; arrow.tool=photo::Tool::Arrow; arrow.color=red; arrow.width=8;
+    arrow.rect=QRectF(QPointF(50,290),QPointF(680,110));
+    photo::Annotation mosaic; mosaic.tool=photo::Tool::Mosaic; mosaic.rect=QRectF(280,100,250,190);
+    photo::Annotation caption; caption.tool=photo::Tool::Text; caption.color=QColor("#0060cc");
+    caption.rect=QRectF(350,180,350,70); caption.fontSize=28; caption.fontWeight=600; caption.text=QStringLiteral("后画文字保持清晰");
+    const QImage result=photo::renderSelection(source,QSizeF(800,360),QRectF(0,0,800,360),{arrow,mosaic,caption});
+    return result.save(outputDir+QStringLiteral("/mosaic-drawing-order.png")) ? 0 : 1;
 }

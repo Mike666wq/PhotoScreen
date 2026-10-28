@@ -8,6 +8,7 @@
 #include <QVector>
 #include <QUndoStack>
 
+#include "geometry.h"
 #include "screen.h"
 
 class QTextDocument;
@@ -69,11 +70,19 @@ QPainterPath arrowPath(const Annotation &annotation);
 bool annotationContains(const Annotation &annotation, const QPointF &point, qreal tolerance = 5);
 struct SelectionMetrics {
     QSize pixelSize;
+    AffineMap pixelFromLogical;
+    QRectF logicalRect;
     qreal scaleX = 1;
     qreal scaleY = 1;
     int screenCount = 0;
 };
 SelectionMetrics selectionMetrics(const QVector<ScreenImage> &screens, const QRectF &selection);
+QImage renderSelectionBase(const QVector<ScreenImage> &screens, const QRectF &selection);
+QImage compositeLayers(const QImage &base, const QImage &annotations);
+QRect annotationDamage(const QVector<Annotation> &before, const QVector<Annotation> &after,
+                       const AffineMap &map, const QRect &bounds);
+void renderAnnotationLayer(QImage &out, const QImage &base, const AffineMap &map,
+                           const QVector<Annotation> &annotations, const QRect &damage = QRect());
 QImage renderSelection(const QImage &source, const QSizeF &logicalSize,
                        const QRectF &selection, const QVector<Annotation> &annotations);
 // 跨屏渲染：选区可以横跨多块屏幕，输出比例取这些屏幕中的最大值，
@@ -81,7 +90,7 @@ QImage renderSelection(const QImage &source, const QSizeF &logicalSize,
 QImage renderSelection(const QVector<ScreenImage> &screens, const QRectF &selection,
                        const QVector<Annotation> &annotations);
 // 标注图层：把标注画到 out 上（out 可复用，避免每帧重新分配）。
-// base 是裁剪后的底图，马赛克从 base 取样，因此底图与标注可以分层缓存。
+// base 是冻结底图；马赛克从 base 与此前标注的合成结果取样，预览与导出共用。
 // crop 是选区在该屏源图中的像素矩形，scaleX/scaleY 是该屏像素与逻辑单位的比例。
 // origin 是该屏的逻辑原点：标注坐标必须与 origin 处在同一坐标空间，
 // 换算到该屏像素时原点与比例都要参与，否则原点不为 0 或比例不为 1 的屏会整块错位。

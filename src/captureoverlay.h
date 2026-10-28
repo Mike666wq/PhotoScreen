@@ -36,6 +36,7 @@ public:
     void applyChosenColor(const QColor &color);
     // 底图重新裁剪次数，仅供测试观察渲染缓存是否生效。
     int cropCount() const { return m_cropCount; }
+    QImage selectionImage();
     // 最近一次落盘的粗细值；0 表示本对象还没落盘过。
     // 供测试观察去抖保存是否真的发生，避免依赖全局 QSettings 状态。
     int persistedLineWidth() const { return m_persistedWidth; }
@@ -52,15 +53,12 @@ protected:
     bool eventFilter(QObject *, QEvent *) override;
 private:
     enum class Drag { None, NewSelection, MoveSelection, ResizeSelection, Draw, MoveObject, ResizeObject, ArrowStart, ArrowEnd };
-    // 单块屏幕的渲染缓存：底图只在选区变化时重新裁剪，标注图层每帧重绘但复用缓冲区。
-    // 跨屏选区时每块参与的屏幕各有一份，比例各自独立。
+    // 仅缓存选区，以导出比例共用同一底图与标注图层，跨屏马赛克网格因此完全一致。
     struct ScreenCache {
-        QRectF logicalRect;     // 该屏上与选区相交的部分（覆盖层局部逻辑坐标）
-        QPoint origin;          // 该屏在覆盖层局部坐标中的原点
-        QRect crop;             // 选区在该屏像素坐标中的矩形
-        qreal scaleX = 1.0, scaleY = 1.0;
-        QImage base;            // 底图裁剪
-        QImage annotations;     // 标注图层
+        QRectF logicalRect;
+        AffineMap pixelFromLocal;
+        QImage base;
+        QImage annotations;
     };
     void buildToolbar();
     void ensureRenderCache();
@@ -150,7 +148,8 @@ private:
     int m_fontSize = 18;
     int m_fontWeight = 400;
     QRectF m_cacheSelection;    // 已缓存底图对应的选区，变化时才重新裁剪
-    QVector<ScreenCache> m_caches;  // 跨屏时每块参与的屏幕一份缓存
+    QVector<ScreenCache> m_caches;
+    QVector<Annotation> m_cachedItems;
     int m_cropCount = 0;        // 底图重新裁剪的次数，仅供测试观察
     int m_persistedWidth = 0;   // 最近一次落盘的粗细值，仅供测试观察
     bool m_copying = false;

@@ -177,6 +177,80 @@ private slots:
             }
         }
     }
+    void textEscapeCommitsDraftAndNextEscapeCancelsCapture() {
+        int writes=0;
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[&](const QImage &,QString *) { ++writes; return true; });
+        QSignalSpy finished(overlay,&CaptureOverlay::finished);
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_5"),Qt::LeftButton);
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QInputMethodEvent input; input.setCommitString(QStringLiteral("保留这段文字")); QApplication::sendEvent(editor,&input);
+        QVERIFY(overlay->annotations().isEmpty());
+        QTest::keyClick(editor,Qt::Key_Escape);
+        QCOMPARE(finished.count(),0); QCOMPARE(overlay->annotations().size(),1);
+        QCOMPARE(overlay->annotations().first().text,QStringLiteral("保留这段文字"));
+        QVERIFY(!overlay->findChild<QFrame *>("stylePanel")->isVisible());
+        QTest::keyClick(overlay,Qt::Key_Escape);
+        QCOMPARE(finished.count(),1); QCOMPARE(writes,0);
+    }
+    void textDraftUndoIsSeparateAndUnchangedCommitIsNoOp() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_3"),Qt::LeftButton);
+        selectArea(overlay,QPoint(50,180),QPoint(300,200));
+        const int depth=overlay->undoDepth();
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_5"),Qt::LeftButton);
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QInputMethodEvent input; input.setCommitString(QStringLiteral("Draft")); QApplication::sendEvent(editor,&input);
+        QTest::keyClick(editor,Qt::Key_Z,Qt::ControlModifier);
+        QVERIFY(editor->toPlainText().isEmpty()); QCOMPARE(overlay->undoDepth(),depth); QCOMPARE(overlay->annotations().size(),1);
+        QTest::keyClick(editor,Qt::Key_Z,Qt::ControlModifier|Qt::ShiftModifier);
+        QCOMPARE(editor->toPlainText(),QStringLiteral("Draft"));
+        QTest::keyClick(editor,Qt::Key_Escape);
+        QCOMPARE(overlay->undoDepth(),depth+1); QCOMPARE(overlay->annotations().size(),2);
+        const Annotation original=overlay->annotations().last();
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_0"),Qt::LeftButton);
+        QTest::mouseDClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(55,60));
+        auto *draft=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(draft);
+        QCOMPARE(overlay->annotations().last().text,original.text);
+        QTest::keyClick(draft,Qt::Key_Escape);
+        QCOMPARE(overlay->undoDepth(),depth+1); QCOMPARE(overlay->annotations().last().id,original.id);
+        QTest::keyClick(overlay,Qt::Key_Z,Qt::ControlModifier);
+        QCOMPARE(overlay->annotations().size(),1);
+    }
+    void preeditEscapeDoesNotCloseTextOrCapture() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        QSignalSpy finished(overlay,&CaptureOverlay::finished);
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_5"),Qt::LeftButton);
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QInputMethodEvent preedit(QStringLiteral("ni"),{}); QApplication::sendEvent(editor,&preedit);
+        QTest::keyClick(editor,Qt::Key_Escape);
+        QVERIFY(editor->isVisible()); QCOMPARE(finished.count(),0); QVERIFY(overlay->annotations().isEmpty());
+        QInputMethodEvent committed; committed.setCommitString(QStringLiteral("你好")); QApplication::sendEvent(editor,&committed);
+        QTest::keyClick(editor,Qt::Key_Return);
+        QVERIFY(editor->toPlainText().contains(QLatin1Char('\n')));
+        QTest::keyClick(editor,Qt::Key_Escape);
+        QCOMPARE(overlay->annotations().first().text,QStringLiteral("你好\n"));
+    }
+    void overflowingTextKeepsAnchorAndFullContents() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(250,160));
+        QTest::mouseClick(overlay->findChild<QToolButton *>("tool_5"),Qt::LeftButton);
+        overlay->findChild<QSlider *>("fontControl")->setValue(34);
+        QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,130));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QInputMethodEvent input; input.setCommitString(QStringLiteral("第一行\n第二行\n第三行\n第四行")); QApplication::sendEvent(editor,&input);
+        QCOMPARE(editor->pos(),QPoint(40,130));
+        auto *hint=overlay->findChild<QLabel *>("textOverflowHint"); QVERIFY(hint); QVERIFY(hint->isVisible());
+        const QString full=editor->toPlainText(); QTest::keyClick(editor,Qt::Key_Escape);
+        QCOMPARE(overlay->annotations().first().text,full);
+        QCOMPARE(overlay->annotations().first().rect.topLeft(),QPointF(40,130));
+        QVERIFY(overlay->annotations().first().rect.bottom()>160);
+    }
     void releasePositionAndCopy() {
         QImage copied; int writes=0;
         auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[&](const QImage &image,QString *) { copied=image; ++writes; return true; });

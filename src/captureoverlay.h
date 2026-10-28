@@ -1,6 +1,7 @@
 #pragma once
 #include "core/annotation.h"
 #include "platform/platform.h"
+#include <QTextCursor>
 #include <QTimer>
 #include <QWidget>
 #include <array>
@@ -97,6 +98,12 @@ private:
     void saveStyleSettings();
     void startText(const QPointF &point, int existing = -1);
     void applyEditorTextStyle();
+    Annotation textDraftFromEditor() const;
+    void beginEditorStyleEdit();
+    void endEditorStyleEdit();
+    void syncTextEditorStyle();
+    void updateUndoButtons();
+    void undoOrRedo(bool redo);
     void resizeTextEditor();
     void resizeTextAnnotation(Annotation &annotation) const;
     void commitText();
@@ -175,6 +182,13 @@ private:
     QPointF m_toolbarAnchor;
     QTextEdit *m_textEditor = nullptr;
     QPointF m_textAnchor;
+    Annotation m_textDraft;
+    QTextCursor m_editorStyleCursor;
+    bool m_editorStyleEditing = false;
+    bool m_applyingTextStyle = false;
+    bool m_resizingText = false;
+    bool m_preeditActive = false;
+    QLabel *m_textOverflowHint = nullptr;
     AnnotationId m_editingTextId = 0;
     QTimer m_settingsSaveTimer;   // 去抖：滑块停止变化后才落盘
 };

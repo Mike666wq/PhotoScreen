@@ -1,5 +1,6 @@
 #include "captureoverlay.h"
 #include "core/geometry.h"
+#include "core/interaction.h"
 #include <QApplication>
 #include <QButtonGroup>
 #include <QCloseEvent>
@@ -278,52 +279,87 @@ CaptureOverlay::CaptureOverlay(ScreenFrame frame, QScreen *screen, ClipboardWrit
     connect(qApp, &QGuiApplication::screenAdded, this, [this](QScreen *) { cancelCapture(); });
     connect(screen, &QScreen::geometryChanged, this, [this](const QRect &) { cancelCapture(); });
     m_pointer = mapFromGlobal(QCursor::pos());
+    m_toolbarAnchor=m_pointer;
     m_hoverWindow = windowAt(m_pointer);
 }
 void CaptureOverlay::buildToolbar() {
-    m_toolbar = new QFrame(this);
+    m_toolbar=new QFrame(this);
     m_toolbar->setObjectName("captureToolbar");
-    m_toolbar->setStyleSheet("QFrame#captureToolbar{background:#f8f8f8;border:1px solid #aaa;border-radius:6px;}"
-                            "QToolButton{padding:4px;border:0;border-radius:3px;color:#222;}"
-                            "QToolButton:checked{background:#cde5ff;} QToolButton:hover{background:#e2eaf5;}");
-    auto *layout = new QHBoxLayout(m_toolbar); layout->setContentsMargins(5,4,5,4); layout->setSpacing(2);
-    auto *scroll=new QScrollArea(m_toolbar); scroll->setObjectName("toolScroll"); scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // 窄屏时工具区可横向滚动，滚动条始终可见，避免用户不知道可以横滚。
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
-    scroll->setMinimumWidth(36); scroll->setFixedHeight(66); scroll->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Fixed);
-    auto *toolArea=new QWidget; auto *toolsLayout=new QHBoxLayout(toolArea);
-    toolsLayout->setContentsMargins(0,0,0,0); toolsLayout->setSpacing(2); layout->addWidget(scroll,1);
-    auto *group = new QButtonGroup(m_toolbar); group->setExclusive(true);
-    const QVector<QPair<QString,Tool>> tools = {{QStringLiteral("选择"),Tool::Select},{QStringLiteral("矩形"),Tool::Rectangle},
-       {QStringLiteral("椭圆"),Tool::Ellipse},{QStringLiteral("箭头"),Tool::Arrow},{QStringLiteral("画笔"),Tool::Pen},
-       {QStringLiteral("文字"),Tool::Text},{QStringLiteral("马赛克"),Tool::Mosaic}};
-    for (const auto &entry : tools) {
-        auto *button = new QToolButton(toolArea); button->setIcon(toolIcon(entry.second)); button->setIconSize(QSize(22,22));
-        // 图标 + 中文文字标签：箭头与画笔不再只能靠 tooltip 区分。
-        button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon); button->setText(entry.first);
-        QFont labelFont=button->font(); labelFont.setPixelSize(11); button->setFont(labelFont);
-        button->setToolTip(entry.first); button->setAccessibleName(entry.first); button->setCheckable(true);
-        button->setObjectName(QStringLiteral("tool_%1").arg(int(entry.second)));
-        group->addButton(button); toolsLayout->addWidget(button);
-        if (entry.second == Tool::Select) button->setChecked(true);
-        connect(button, &QToolButton::clicked, this, [this, tool=entry.second] { commitText(); commitStyleEdit(); hidePanels(); setTool(tool); });
+    m_toolbar->setStyleSheet(QStringLiteral(
+        "QFrame#captureToolbar{background:#f8f8f8;border:1px solid #aeb5be;border-radius:6px;}"
+        "QLabel{color:#222;} QToolButton{padding:0;border:0;border-radius:4px;color:#222;}"
+        "QToolButton:checked{background:#cde5ff;} QToolButton:hover{background:#e2eaf5;}"
+        "QToolButton:focus{border:1px solid #1687ef;} QToolButton:disabled{color:#9299a2;}"));
+    auto *layout=new QVBoxLayout(m_toolbar);
+    layout->setContentsMargins(6,6,6,6); layout->setSpacing(4);
+    m_primaryLayout=new QBoxLayout(QBoxLayout::LeftToRight);
+    m_primaryLayout->setContentsMargins(0,0,0,0); m_primaryLayout->setSpacing(8);
+    layout->addLayout(m_primaryLayout);
+    m_toolArea=new QWidget(m_toolbar);
+    m_toolLayout=new QGridLayout(m_toolArea);
+    m_toolLayout->setContentsMargins(0,0,0,0); m_toolLayout->setSpacing(2);
+    m_primaryLayout->addWidget(m_toolArea,0,Qt::AlignLeft);
+    auto *group=new QButtonGroup(m_toolbar); group->setExclusive(true);
+    const QStringList names={QStringLiteral("选择"),QStringLiteral("矩形"),QStringLiteral("椭圆"),QStringLiteral("箭头"),
+                             QStringLiteral("画笔"),QStringLiteral("文字"),QStringLiteral("马赛克")};
+    const QStringList keys={QStringLiteral("V"),QStringLiteral("R"),QStringLiteral("O"),QStringLiteral("A"),
+                            QStringLiteral("P"),QStringLiteral("T"),QStringLiteral("M")};
+    for (int i=0;i<names.size();++i) {
+        const Tool tool=static_cast<Tool>(i);
+        auto *button=new QToolButton(m_toolArea);
+        button->setObjectName(QStringLiteral("tool_%1").arg(i));
+        button->setIcon(toolIcon(tool)); button->setIconSize(QSize(22,22)); button->setFixedSize(32,32);
+        button->setText(names[i]); button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setToolTip(QStringLiteral("%1 (%2)").arg(names[i],keys[i])); button->setAccessibleName(names[i]);
+        button->setCheckable(true); button->setFocusPolicy(Qt::TabFocus);
+        group->addButton(button); m_toolButtons.append(button); m_toolLayout->addWidget(button,0,i);
+        if (tool==Tool::Select) button->setChecked(true);
+        connect(button,&QToolButton::clicked,this,[this,tool] {
+            const bool same=m_tool==tool;
+            commitText(); commitStyleEdit();
+            if (m_colorPanel) m_colorPanel->hide();
+            setTool(tool);
+            m_parametersExpanded=same ? !m_parametersExpanded : tool!=Tool::Select;
+            updateStylePanel(); positionToolbar();
+        });
     }
-    m_colorButton = new QToolButton(toolArea); m_colorButton->setToolTip(QStringLiteral("颜色")); m_colorButton->setAccessibleName(QStringLiteral("颜色"));
-    m_colorButton->setObjectName("colorButton"); toolsLayout->addWidget(m_colorButton); updateColorSwatch();
-    connect(m_colorButton, &QToolButton::clicked, this, [this] { toggleColorPanel(); });
-    m_widthButton=new QToolButton(toolArea); m_widthButton->setObjectName("widthButton");
-    m_widthButton->setText(QStringLiteral("粗细 %1").arg(m_lineWidth)); m_widthButton->setToolTip(QStringLiteral("线宽 / 箭头粗细"));
-    m_widthButton->setAccessibleName(QStringLiteral("线宽 / 箭头粗细")); toolsLayout->addWidget(m_widthButton);
-    connect(m_widthButton, &QToolButton::clicked, this, [this] { toggleStylePanel(); });
-    m_fontButton=new QToolButton(toolArea); m_fontButton->setObjectName("fontButton"); m_fontButton->setText(QStringLiteral("文字"));
-    m_fontButton->setToolTip(QStringLiteral("文字大小和粗细")); m_fontButton->setAccessibleName(QStringLiteral("文字大小和粗细")); toolsLayout->addWidget(m_fontButton);
-    connect(m_fontButton, &QToolButton::clicked, this, [this] { toggleStylePanel(); });
-    buildStylePanel();
+    auto *actions=new QWidget(m_toolbar);
+    auto *actionRow=new QHBoxLayout(actions); actionRow->setContentsMargins(0,0,0,0); actionRow->setSpacing(2);
+    m_primaryLayout->addWidget(actions,0,Qt::AlignRight);
+    auto action=[actions,actionRow](const char *name,const QString &label,const QString &tip) {
+        auto *button=new QToolButton(actions); button->setObjectName(name); button->setText(label);
+        button->setToolTip(tip); button->setAccessibleName(label); button->setFixedSize(32,32);
+        button->setFocusPolicy(Qt::TabFocus); actionRow->addWidget(button); return button;
+    };
+    m_colorButton=action("colorButton",QStringLiteral("颜色"),QStringLiteral("选择颜色"));
+    updateColorSwatch();
+    connect(m_colorButton,&QToolButton::clicked,this,&CaptureOverlay::toggleColorPanel);
+    m_undoButton=action("undoButton",QStringLiteral("撤销"),QStringLiteral("撤销 (Ctrl/Command+Z)"));
+    m_redoButton=action("redoButton",QStringLiteral("重做"),QStringLiteral("重做 (Ctrl/Command+Shift+Z)"));
+    for (QToolButton *button : {m_undoButton,m_redoButton}) {
+        const bool redo=button==m_redoButton;
+        QPixmap image(24,24); image.fill(Qt::transparent);
+        QPainter painter(&image); painter.setRenderHint(QPainter::Antialiasing);
+        if (redo) { painter.translate(24,0); painter.scale(-1,1); }
+        painter.setPen(QPen(QColor("#303640"),1.8,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));
+        painter.drawArc(QRectF(5,7,15,13),-30*16,230*16);
+        painter.drawLine(QPointF(4,5),QPointF(4,12)); painter.drawLine(QPointF(4,12),QPointF(11,12));
+        painter.end(); button->setIcon(QIcon(image)); button->setIconSize(QSize(22,22));
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly); button->setEnabled(false);
+    }
+    connect(m_undoButton,&QToolButton::clicked,this,[this] { commitText(); commitStyleEdit(); m_document.undoStack()->undo(); });
+    connect(m_redoButton,&QToolButton::clicked,this,[this] { commitText(); commitStyleEdit(); m_document.undoStack()->redo(); });
+    auto *cancel=action("cancelButton",QStringLiteral("×"),QStringLiteral("取消 (Esc)"));
+    cancel->setAccessibleName(QStringLiteral("取消"));
+    auto *done=action("doneButton",QStringLiteral("完成"),QStringLiteral("复制到剪贴板 (Enter)"));
+    done->setFixedWidth(52);
+    done->setStyleSheet(QStringLiteral("QToolButton{background:#1687ef;color:white;} QToolButton:hover{background:#0876d5;}"));
+    connect(cancel,&QToolButton::clicked,this,&CaptureOverlay::cancelCapture);
+    connect(done,&QToolButton::clicked,this,&CaptureOverlay::finishCapture);
+    buildStylePanel(); layout->addWidget(m_stylePanel);
     buildColorPanel();
     connect(m_widthControl, &QSlider::valueChanged, this, [this](int n) {
         m_lineWidth=n; m_settingsSaveTimer.start();
-        m_widthButton->setText(QStringLiteral("粗细 %1").arg(n));
         if (m_textEditor) {
             applyEditorTextStyle();
         } else if (selectedIndex()>=0 && selectedIndex()<m_document.items().size() && m_document.items()[selectedIndex()].tool!=Tool::Text) {
@@ -333,7 +369,6 @@ void CaptureOverlay::buildToolbar() {
     });
     connect(m_fontControl, &QSlider::valueChanged, this, [this](int n) {
         m_fontSize=n; m_settingsSaveTimer.start();
-        m_fontButton->setText(QStringLiteral("文字 %1").arg(n));
         if (m_textEditor) {
             applyEditorTextStyle(); resizeTextEditor();
         } else if (selectedIndex()>=0 && selectedIndex()<m_document.items().size() && m_document.items()[selectedIndex()].tool==Tool::Text) {
@@ -364,58 +399,47 @@ void CaptureOverlay::buildToolbar() {
         });
         connect(slider,&QSlider::sliderReleased,this,[this] { commitStyleEdit(); });
     }
-    toolArea->adjustSize(); scroll->setWidget(toolArea); scroll->setMaximumWidth(toolArea->sizeHint().width()+2);
-    // 撤销/重做改用文字：符号在部分字体下缺字形，渲染不一致。
-    m_undoButton = new QToolButton(m_toolbar); m_undoButton->setObjectName("undoButton"); m_undoButton->setText(QStringLiteral("撤销")); m_undoButton->setToolTip(QStringLiteral("撤销")); m_undoButton->setAccessibleName(QStringLiteral("撤销")); m_undoButton->setEnabled(false); layout->addWidget(m_undoButton);
-    m_redoButton = new QToolButton(m_toolbar); m_redoButton->setObjectName("redoButton"); m_redoButton->setText(QStringLiteral("重做")); m_redoButton->setToolTip(QStringLiteral("重做")); m_redoButton->setAccessibleName(QStringLiteral("重做")); m_redoButton->setEnabled(false); layout->addWidget(m_redoButton);
-    connect(m_undoButton, &QToolButton::clicked, this, [this] { commitText(); commitStyleEdit(); m_document.undoStack()->undo(); });
-    connect(m_redoButton, &QToolButton::clicked, this, [this] { commitText(); commitStyleEdit(); m_document.undoStack()->redo(); });
-    auto *cancel = new QToolButton(m_toolbar); cancel->setObjectName("cancelButton"); cancel->setText(QStringLiteral("×")); cancel->setToolTip(QStringLiteral("取消")); cancel->setAccessibleName(QStringLiteral("取消")); layout->addWidget(cancel);
-    auto *done = new QToolButton(m_toolbar); done->setObjectName("doneButton"); done->setText(QStringLiteral("✓")); done->setToolTip(QStringLiteral("完成")); done->setAccessibleName(QStringLiteral("完成")); layout->addWidget(done);
-    connect(cancel, &QToolButton::clicked, this, &CaptureOverlay::cancelCapture);
-    connect(done, &QToolButton::clicked, this, &CaptureOverlay::finishCapture);
-    m_toolbar->adjustSize(); m_toolbar->hide();
+    updateStylePanel(); m_toolbar->adjustSize(); m_toolbar->hide();
 }
 void CaptureOverlay::buildStylePanel() {
-    // 参数面板是覆盖层的普通子控件，不是原生菜单：
-    // macOS 的 NSMenu 会接管鼠标，内嵌滑块拿不到可靠的拖拽事件。
-    m_stylePanel=new QFrame(this);
-    m_stylePanel->setObjectName("stylePanel");
-    m_stylePanel->setStyleSheet("QFrame#stylePanel{background:#f8f8f8;border:1px solid #aaa;border-radius:6px;}"
-                                "QLabel{color:#222;}");
+    m_stylePanel=new QFrame(m_toolbar); m_stylePanel->setObjectName("stylePanel");
     auto *layout=new QVBoxLayout(m_stylePanel);
-    layout->setContentsMargins(12,10,12,10); layout->setSpacing(6);
-
-    auto *widthRow=new QHBoxLayout;
-    m_widthControl=addStyledSlider(widthRow,QStringLiteral("粗细"),1,20,m_lineWidth,&m_widthValue);
+    layout->setContentsMargins(4,4,4,0); layout->setSpacing(2);
+    m_toolTitle=new QLabel(m_stylePanel); m_toolTitle->setObjectName("toolTitle");
+    m_toolTitle->setStyleSheet(QStringLiteral("color:#586373; font-size:11px;")); layout->addWidget(m_toolTitle);
+    auto addRow=[this,layout](const char *name) {
+        auto *row=new QFrame(m_stylePanel); row->setObjectName(name); layout->addWidget(row);
+        auto *box=new QHBoxLayout(row); box->setContentsMargins(0,0,0,0); return box;
+    };
+    m_widthControl=addStyledSlider(addRow("widthRow"),QStringLiteral("粗细"),1,20,m_lineWidth,&m_widthValue);
     m_widthControl->setObjectName("widthControl"); m_widthValue->setObjectName("widthValue");
-    layout->addLayout(widthRow);
-
-    auto *fontRow=new QHBoxLayout;
-    m_fontControl=addStyledSlider(fontRow,QStringLiteral("字号"),10,72,m_fontSize,&m_fontValue);
+    m_fontControl=addStyledSlider(addRow("fontRow"),QStringLiteral("字号"),10,72,m_fontSize,&m_fontValue);
     m_fontControl->setObjectName("fontControl"); m_fontValue->setObjectName("fontValue");
-    layout->addLayout(fontRow);
-
-    auto *weightRow=new QHBoxLayout;
-    m_fontWeightControl=addStyledSlider(weightRow,QStringLiteral("字重"),100,900,m_fontWeight,&m_fontWeightValue);
+    m_fontWeightControl=addStyledSlider(addRow("weightRow"),QStringLiteral("字重"),100,900,m_fontWeight,&m_fontWeightValue);
     m_fontWeightControl->setObjectName("fontWeightControl"); m_fontWeightValue->setObjectName("fontWeightValue");
     m_fontWeightControl->setSingleStep(100); m_fontWeightControl->setPageStep(100);
     m_fontWeightControl->setTickPosition(QSlider::TicksBelow); m_fontWeightControl->setTickInterval(100);
-    layout->addLayout(weightRow);
-
     m_stylePanel->hide();
 }
-void CaptureOverlay::toggleStylePanel() {
-    if (m_stylePanel->isVisible()) { hidePanels(); return; }
-    hidePanels();
-    m_stylePanel->show();
-    // 面板默认贴在工具栏上沿外侧，避免压住撤销/重做/取消/完成。
-    const QPoint anchor=m_toolbar->mapTo(this,QPoint(m_toolbar->width()/2,0));
-    positionPanel(m_stylePanel,anchor,true);
+void CaptureOverlay::updateStylePanel() {
+    if (!m_stylePanel) return;
+    const Tool tool=m_textEditor ? Tool::Text : (selectedIndex()>=0 ? m_document.items()[selectedIndex()].tool : m_tool);
+    const bool text=tool==Tool::Text;
+    const bool width=tool==Tool::Rectangle || tool==Tool::Ellipse || tool==Tool::Arrow || tool==Tool::Pen;
+    const QStringList names={QStringLiteral("选择"),QStringLiteral("矩形"),QStringLiteral("椭圆"),QStringLiteral("箭头"),
+                             QStringLiteral("画笔"),QStringLiteral("文字"),QStringLiteral("马赛克")};
+    m_toolTitle->setText(names[int(tool)]);
+    m_stylePanel->findChild<QFrame *>("widthRow")->setVisible(width);
+    m_stylePanel->findChild<QFrame *>("fontRow")->setVisible(text);
+    m_stylePanel->findChild<QFrame *>("weightRow")->setVisible(text);
+    m_stylePanel->setVisible(m_parametersExpanded && (text || width));
+    m_colorButton->setEnabled(tool!=Tool::Mosaic);
 }
 void CaptureOverlay::hidePanels() {
+    m_parametersExpanded=false;
     if (m_stylePanel) m_stylePanel->hide();
     if (m_colorPanel) m_colorPanel->hide();
+    if (m_toolbar && !m_selection.isEmpty() && !m_ending) positionToolbar();
 }
 bool CaptureOverlay::panelVisible() const {
     return (m_stylePanel && m_stylePanel->isVisible()) || (m_colorPanel && m_colorPanel->isVisible());
@@ -426,7 +450,12 @@ void CaptureOverlay::buildColorPanel() {
     m_colorPanel->setObjectName("colorPanel");
     m_colorPanel->setStyleSheet("QFrame#colorPanel{background:#f8f8f8;border:1px solid #aaa;border-radius:6px;}"
                                 "QLabel{color:#222;}");
-    auto *layout=new QVBoxLayout(m_colorPanel);
+    auto *outer=new QVBoxLayout(m_colorPanel); outer->setContentsMargins(0,0,0,0);
+    auto *scroll=new QScrollArea(m_colorPanel); scroll->setObjectName("colorScroll");
+    scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto *content=new QWidget; scroll->setWidget(content); outer->addWidget(scroll);
+    auto *layout=new QVBoxLayout(content);
     layout->setContentsMargins(12,10,12,10); layout->setSpacing(8);
 
     auto *grid=new QGridLayout; grid->setSpacing(4);
@@ -492,7 +521,6 @@ void CaptureOverlay::buildColorPanel() {
 }
 void CaptureOverlay::toggleColorPanel() {
     if (m_colorPanel->isVisible()) { hidePanels(); return; }
-    hidePanels();
     m_colorPanel->show();
     updateColorPreview();
     updateRecentButtons();
@@ -567,36 +595,18 @@ void CaptureOverlay::applyRecentColor(int index) {
     if (index<0 || index>=colors.size()) return;
     applyChosenColor(colors.at(index));
 }
+QRect CaptureOverlay::uiScreenBounds() const {
+    QVector<QRect> screens;
+    for (const auto &screen : m_frame.screens) screens.append(screen.geometry);
+    const QRect host=interactionScreen(screens,toVirtual(m_toolbarAnchor),m_selection.translated(m_frame.virtualGeometry.topLeft()));
+    return host.translated(-m_frame.virtualGeometry.topLeft());
+}
 void CaptureOverlay::positionPanel(QFrame *panel, const QPoint &anchor, bool preferAbove) {
-    // 上次定位留下的最大高度限制要先清掉，否则面板无法恢复原尺寸。
-    panel->setMaximumHeight(QWIDGETSIZE_MAX);
-    panel->adjustSize();
-    const QRect bounds=rect();
-    const QRect toolbarRect=m_toolbar->geometry();
-    const int gap=6;
-    // 工具栏所占的横带是禁区：面板只能整块落在工具栏上方或下方，
-    // 候选位置直接相对工具栏计算，不再依赖锚点，跨平台结果一致。
-    const int aboveY=toolbarRect.top()-gap-panel->height();
-    const int belowY=toolbarRect.bottom()+1+gap;
-    const bool aboveFits=aboveY>=0 && aboveY+panel->height()<=bounds.height();
-    const bool belowFits=belowY>=0 && belowY+panel->height()<=bounds.height();
-    int y=-1;
-    if (preferAbove ? aboveFits : belowFits) y=preferAbove?aboveY:belowY;
-    else if (preferAbove ? belowFits : aboveFits) y=preferAbove?belowY:aboveY;
-    if (y<0) {
-        // 两侧都放不下时，先压缩面板高度再放进较空的一侧，保证不压住工具栏。
-        const int room=qMax(toolbarRect.top()-gap, bounds.height()-(toolbarRect.bottom()+1)-gap);
-        if (room>0 && room<panel->height() && room>=panel->minimumSizeHint().height()) {
-            panel->setMaximumHeight(room);
-            panel->adjustSize();
-        }
-        // 面板高度变了，候选位置要按新高度重算。
-        y=preferAbove ? toolbarRect.top()-gap-panel->height() : toolbarRect.bottom()+1+gap;
-        y=qBound(0,y,qMax(0,bounds.height()-panel->height()));
-    }
-    const int x=qBound(0,anchor.x()-panel->width()/2,qMax(0,bounds.width()-panel->width()));
-    panel->move(x,y);
-    panel->raise();
+    const QRect host=uiScreenBounds();
+    if (host.isEmpty()) return;
+    const QSize wanted(qMin(280,qMax(1,host.width()-16)),280);
+    const QRect placed=popupPlacement(wanted,m_toolbar->geometry(),anchor,host,preferAbove);
+    panel->setGeometry(placed); panel->raise();
 }
 void CaptureOverlay::updateColorSwatch() {
     if (!m_colorButton) return;
@@ -619,13 +629,26 @@ void CaptureOverlay::applyChosenColor(const QColor &color) {
     updatePresetHighlight();
 }
 void CaptureOverlay::positionToolbar() {
-    if (m_selection.isEmpty()) { m_toolbar->hide(); return; }
-    m_toolbar->setMaximumWidth(qMax(1,width()-4)); m_toolbar->adjustSize();
-    const int x = qBound(0, qRound(m_selection.left()), qMax(0,width()-m_toolbar->width()));
-    int y = qRound(m_selection.bottom()) + 8;
-    if (y + m_toolbar->height() > height()) y = qRound(m_selection.top()) - m_toolbar->height() - 8;
-    y = qBound(0, y, qMax(0,height()-m_toolbar->height()));
-    m_toolbar->move(x,y); m_toolbar->show(); m_toolbar->raise();
+    if (m_selection.isEmpty() || m_ending) { m_toolbar->hide(); return; }
+    const QRect host=uiScreenBounds();
+    if (host.isEmpty()) return;
+    const int available=qMax(1,host.width()-16);
+    const int toolbarWidth=qMin(460,available);
+    const bool narrow=toolbarWidth<448;
+    m_primaryLayout->setDirection(narrow ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+    const int columns=narrow ? qMax(1,qMin(7,(toolbarWidth-12)/34)) : 7;
+    for (int i=0;i<m_toolButtons.size();++i) {
+        m_toolLayout->removeWidget(m_toolButtons[i]);
+        m_toolLayout->addWidget(m_toolButtons[i],i/columns,i%columns);
+    }
+    m_toolbar->setFixedWidth(toolbarWidth);
+    m_toolbar->layout()->invalidate(); m_toolbar->layout()->activate(); m_toolbar->adjustSize();
+    const QRect placed=toolbarPlacement(m_toolbar->size(),m_selection,host);
+    m_toolbar->move(placed.topLeft()); m_toolbar->show(); m_toolbar->raise();
+    if (m_colorPanel->isVisible()) {
+        const QPoint anchor=m_colorButton->mapTo(this,QPoint(m_colorButton->width()/2,m_colorButton->height()));
+        positionPanel(m_colorPanel,anchor,false);
+    }
 }
 int CaptureOverlay::selectedIndex() const { return m_document.indexOf(m_selectedId); }
 int CaptureOverlay::editingTextIndex() const { return m_document.indexOf(m_editingTextId); }
@@ -634,7 +657,7 @@ void CaptureOverlay::selectObject(int index) {
 }
 void CaptureOverlay::syncSelectedStyle() {
     const int index=selectedIndex();
-    if (index<0) return;
+    if (index<0) { updateStylePanel(); return; }
     const Annotation &item=m_document.items()[index];
     const QSignalBlocker widthBlock(m_widthControl),fontBlock(m_fontControl),weightBlock(m_fontWeightControl);
     m_color=item.color;
@@ -643,12 +666,11 @@ void CaptureOverlay::syncSelectedStyle() {
         m_fontSize=item.fontSize; m_fontWeight=item.fontWeight;
         m_fontControl->setValue(m_fontSize); m_fontWeightControl->setValue(m_fontWeight);
         m_fontValue->setText(QString::number(m_fontSize)); m_fontWeightValue->setText(QString::number(m_fontWeight));
-        m_fontButton->setText(QStringLiteral("文字 %1").arg(m_fontSize));
     } else {
         m_lineWidth=qRound(item.width); m_widthControl->setValue(m_lineWidth);
         m_widthValue->setText(QString::number(m_lineWidth));
-        m_widthButton->setText(QStringLiteral("粗细 %1").arg(m_lineWidth));
     }
+    updateStylePanel();
 }
 void CaptureOverlay::applyStyleChange(int index, const Annotation &item) {
     // 拖动中（会话已开启）就地修改，释放时统一提交为一步撤销；
@@ -781,17 +803,12 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
             if (a.tool==Tool::Arrow) { p.drawRect(handleRect(a.rect.topLeft())); p.drawRect(handleRect(a.rect.bottomRight())); }
             else p.drawRect(handleRect(box.bottomRight()));
         }
-        // 尺寸标签：单屏显示物理像素，跨屏显示逻辑尺寸。
-        QString label;
-        if (m_caches.size()<=1) {
-            const QRect pixels=m_caches.isEmpty()?QRect():m_caches.first().crop;
-            label=QStringLiteral("%1 × %2 px").arg(pixels.width()).arg(pixels.height());
-        } else {
-            label=QStringLiteral("%1 × %2 逻辑像素（跨 %3 屏）")
-                    .arg(qRound(m_selection.width())).arg(qRound(m_selection.height())).arg(m_caches.size());
-        }
-        QRectF l(m_selection.left(),qMax(0.0,m_selection.top()-24),p.fontMetrics().horizontalAdvance(label)+12,22);
-        p.drawRoundedRect(l,3,3); p.drawText(l,Qt::AlignCenter,label);
+        const SelectionMetrics metrics=selectionMetrics(m_frame.screens,m_selection.translated(origin));
+        QString label=QStringLiteral("%1 × %2 px").arg(metrics.pixelSize.width()).arg(metrics.pixelSize.height());
+        if (metrics.screenCount>1) label+=QStringLiteral(" · 跨 %1 屏").arg(metrics.screenCount);
+        const QRect desired(qRound(m_selection.left()),qFloor(m_selection.top())-24,p.fontMetrics().horizontalAdvance(label)+12,22);
+        const QRect tag=fitInsideScreen(desired,uiScreenBounds());
+        p.setPen(QColor("#1687ef")); p.setBrush(Qt::white); p.drawRoundedRect(tag,3,3); p.drawText(tag,Qt::AlignCenter,label);
     } else if (!m_hoverWindow.isEmpty()) {
         p.setPen(QPen(QColor("#1687ef"),2)); p.setBrush(Qt::NoBrush); p.drawRect(m_hoverWindow);
     }
@@ -804,8 +821,9 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
             const int py=qBound(0,int(local.y()*screen->scaleY()),screen->image.height()-1);
             const QColor c=screen->image.pixelColor(px,py);
             const QImage sample=magnifierSample(screen->image,QPoint(px,py));
-            const int x=qBound(0,int(m_pointer.x())+18,qMax(0,width()-150)), y=qBound(0,int(m_pointer.y())+18,qMax(0,height()-148));
-            const QRect box(x,y,146,144); p.fillRect(box,QColor(20,20,20,230));
+            const QRect screenLocal=screen->geometry.translated(-origin);
+            const QRect box=fitInsideScreen(QRect(m_pointer.toPoint()+QPoint(18,18),QSize(146,144)),screenLocal);
+            const int x=box.x(),y=box.y(); p.fillRect(box,QColor(20,20,20,230));
             p.drawImage(QRect(x+19,y+4,108,108),sample);
             p.setPen(Qt::red); p.drawLine(x+73,y+49,x+73,y+67); p.drawLine(x+64,y+58,x+82,y+58);
             p.setPen(Qt::white); p.drawText(QRect(x+4,y+115,138,24),Qt::AlignCenter,QStringLiteral("%1, %2  %3").arg(px).arg(py).arg(c.name().toUpper()));
@@ -828,8 +846,8 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
     // 右键：清空选区重新框选，但保留已画的标注与撤销历史。
     if (event->button()==Qt::RightButton) { if (m_selection.isEmpty()) cancelCapture(); else { commitText(); clearSelection(); } return; }
     if (event->button()!=Qt::LeftButton) return;
-    // 点到画布就收起参数面板。
-    hidePanels();
+    // 颜色板外的首次点击只收起颜色板，不误画标注。
+    if (m_colorPanel->isVisible()) { m_colorPanel->hide(); return; }
     commitText(); m_press=boundedPoint(event->position()); m_pointer=m_press;
     if (m_selection.isEmpty()) { m_drag=Drag::NewSelection; m_startRect={}; return; }
     if (m_tool==Tool::Select) {
@@ -855,8 +873,9 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
                 m_fontValue->setText(QString::number(m_fontSize)); m_fontWeightValue->setText(QString::number(m_fontWeight));
             } else {
                 m_lineWidth=qRound(m_startAnnotation.width); m_widthControl->setValue(m_lineWidth);
-                m_widthValue->setText(QString::number(m_lineWidth)); m_widthButton->setText(QStringLiteral("粗细 %1").arg(m_lineWidth));
+                m_widthValue->setText(QString::number(m_lineWidth));
             }
+            m_parametersExpanded=true; updateStylePanel(); positionToolbar();
             m_drag=Drag::MoveObject; update(); return;
         }
         m_selectedId=0; m_startRect=m_selection;
@@ -864,7 +883,7 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *event) {
         else { clearSelection(); m_drag=Drag::NewSelection; }
     } else if (m_selection.contains(m_press)) {
         if (m_tool==Tool::Text) { startText(m_press); return; }
-        m_drag=Drag::Draw; m_preview={}; m_preview.tool=m_tool; m_preview.color=m_color; m_preview.width=m_lineWidth;
+        m_selectedId=0; m_drag=Drag::Draw; m_preview={}; m_preview.tool=m_tool; m_preview.color=m_color; m_preview.width=m_lineWidth;
         m_preview.fontSize=m_fontSize; m_preview.rect=QRectF(m_press,m_press); if (m_tool==Tool::Pen) m_preview.points.append(m_press);
         m_hasPreview=true;
     }
@@ -882,7 +901,7 @@ void CaptureOverlay::updateDrag(const QPointF &point) {
     else if (m_drag==Drag::ArrowStart) { m_preview=m_startAnnotation; m_preview.rect.setTopLeft(m_pointer); m_hasPreview=true; }
     else if (m_drag==Drag::ArrowEnd) { m_preview=m_startAnnotation; m_preview.rect.setBottomRight(m_pointer); m_hasPreview=true; }
     else if (m_selection.isEmpty()) m_hoverWindow=windowAt(m_pointer);
-    if (!m_selection.isEmpty() && m_drag!=Drag::NewSelection) positionToolbar();
+    if (m_drag==Drag::MoveSelection || m_drag==Drag::ResizeSelection) positionToolbar();
     update();
 }
 void CaptureOverlay::mouseMoveEvent(QMouseEvent *event) { updateDrag(event->position()); }
@@ -892,6 +911,7 @@ void CaptureOverlay::mouseReleaseEvent(QMouseEvent *event) {
     if (m_drag==Drag::NewSelection) {
         if (QLineF(m_press,m_pointer).length()<3) m_selection=windowAt(m_press);
         if (m_selection.width()<2 || m_selection.height()<2) m_selection={};
+        m_toolbarAnchor=m_pointer;
         positionToolbar();
     } else if (m_drag==Drag::Draw && m_hasPreview) {
         if (m_preview.tool==Tool::Pen || (m_preview.tool==Tool::Arrow && QLineF(m_preview.rect.topLeft(),m_preview.rect.bottomRight()).length()>=2) ||
@@ -1030,9 +1050,10 @@ void CaptureOverlay::showError(const QString &message) {
         connect(retry,&QToolButton::clicked,this,&CaptureOverlay::finishCapture);
     }
     m_errorMessage->setText(message);
-    m_errorBanner->setMaximumWidth(qMax(1,width()-16));
+    const QRect host=uiScreenBounds();
+    m_errorBanner->setMaximumWidth(qMax(1,host.width()-16));
     m_errorBanner->adjustSize();
-    m_errorBanner->move(qMax(0,(width()-m_errorBanner->width())/2),8);
+    m_errorBanner->move(fitInsideScreen(QRect(host.topLeft(),m_errorBanner->size()),host).topLeft());
     m_errorBanner->show();
     m_errorBanner->raise();
     setFocus();

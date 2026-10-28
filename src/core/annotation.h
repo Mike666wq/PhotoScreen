@@ -59,6 +59,13 @@ void drawAnnotation(QPainter &painter, const Annotation &annotation);
 void configureTextDocument(QTextDocument &document, const Annotation &annotation);
 QPainterPath arrowPath(const Annotation &annotation);
 bool annotationContains(const Annotation &annotation, const QPointF &point, qreal tolerance = 5);
+struct SelectionMetrics {
+    QSize pixelSize;
+    qreal scaleX = 1;
+    qreal scaleY = 1;
+    int screenCount = 0;
+};
+SelectionMetrics selectionMetrics(const QVector<ScreenImage> &screens, const QRectF &selection);
 QImage renderSelection(const QImage &source, const QSizeF &logicalSize,
                        const QRectF &selection, const QVector<Annotation> &annotations);
 // 跨屏渲染：选区可以横跨多块屏幕，输出比例取这些屏幕中的最大值，

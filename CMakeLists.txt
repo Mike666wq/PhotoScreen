@@ -20,6 +20,8 @@ add_library(photoscreen_core STATIC
   src/core/annotation.h
   src/core/geometry.cpp
   src/core/geometry.h
+  src/core/interaction.cpp
+  src/core/interaction.h
   src/core/screen.cpp
   src/core/screen.h
 )

@@ -69,7 +69,8 @@ protected:
         const int handleRadius=7;
         QRect groove=style()->subControlRect(QStyle::CC_Slider,&option,QStyle::SC_SliderGroove,this);
         if (groove.width()<=0) groove=QRect(handleRadius,0,qMax(1,width()-2*handleRadius),1);
-        const int handleLength=qMax(2,style()->pixelMetric(QStyle::PM_SliderHandleLength,&option,this));
+        // 手柄长度固定：几何完全自洽，也不依赖各平台 style 的像素度量枚举。
+        const int handleLength=2*handleRadius;
         const int span=qMax(1,groove.width());
         // sliderPositionFromValue(min, max, value, span, offset)：offset 必须是 0，
         // 传错会让手柄整体偏移一整个轨道长度，看上去「拖不动」。

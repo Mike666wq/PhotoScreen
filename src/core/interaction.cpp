@@ -1,9 +1,60 @@
 #include "interaction.h"
 
+#include <QLineF>
 #include <QtMath>
 #include <algorithm>
 
 namespace photo {
+QVector<QPointF> rectangleHandles(const QRectF &r) {
+    return {r.topLeft(),QPointF(r.center().x(),r.top()),r.topRight(),QPointF(r.right(),r.center().y()),
+            r.bottomRight(),QPointF(r.center().x(),r.bottom()),r.bottomLeft(),QPointF(r.left(),r.center().y())};
+}
+QVector<QPointF> annotationHandles(const Annotation &annotation) {
+    if (annotation.tool==Tool::Arrow) return {annotation.rect.topLeft(),annotation.rect.bottomRight()};
+    const QRectF rect=annotation.bounds();
+    if (annotation.tool==Tool::Text) return {QPointF(rect.left(),rect.center().y()),QPointF(rect.right(),rect.center().y())};
+    return rectangleHandles(rect);
+}
+int hitHandle(const QVector<QPointF> &handles, const QPointF &point, qreal radius) {
+    for (int i=0;i<handles.size();++i)
+        if (QRectF(handles[i]-QPointF(radius,radius),QSizeF(2*radius,2*radius)).contains(point)) return i;
+    return -1;
+}
+QRectF resizeFromHandle(const QRectF &start, int handle, const QPointF &point, const QRectF &bounds, qreal minimum) {
+    const QPointF p(qBound(bounds.left(),point.x(),bounds.right()),qBound(bounds.top(),point.y(),bounds.bottom()));
+    QRectF rect=start;
+    if (handle==0 || handle==6 || handle==7) rect.setLeft(p.x());
+    if (handle==2 || handle==3 || handle==4) rect.setRight(p.x());
+    if (handle>=0 && handle<=2) rect.setTop(p.y());
+    if (handle>=4 && handle<=6) rect.setBottom(p.y());
+    rect=rect.normalized().intersected(bounds);
+    const qreal minWidth=qMin(minimum,bounds.width()),minHeight=qMin(minimum,bounds.height());
+    if (rect.width()<minWidth) rect.setWidth(minWidth);
+    if (rect.height()<minHeight) rect.setHeight(minHeight);
+    rect.moveLeft(qBound(bounds.left(),rect.left(),bounds.right()-rect.width()));
+    rect.moveTop(qBound(bounds.top(),rect.top(),bounds.bottom()-rect.height()));
+    return rect;
+}
+QPointF constrainedSquareEnd(const QPointF &start, const QPointF &point, const QRectF &bounds) {
+    const QPointF delta=point-start;
+    const int xSign=delta.x()<0?-1:1,ySign=delta.y()<0?-1:1;
+    qreal side=qMax(qAbs(delta.x()),qAbs(delta.y()));
+    side=qMin(side,xSign>0?bounds.right()-start.x():start.x()-bounds.left());
+    side=qMax(0.0,qMin(side,ySign>0?bounds.bottom()-start.y():start.y()-bounds.top()));
+    return start+QPointF(xSign*side,ySign*side);
+}
+QPointF constrainedArrowEnd(const QPointF &start, const QPointF &point, const QRectF &bounds) {
+    const QPointF delta=point-start;
+    constexpr qreal step=3.14159265358979323846/4;
+    const qreal angle=qRound(qAtan2(delta.y(),delta.x())/step)*step;
+    const QPointF direction(qCos(angle),qSin(angle));
+    qreal length=QLineF(start,point).length();
+    if (qAbs(direction.x())>0.00001)
+        length=qMin(length,(direction.x()>0?bounds.right()-start.x():bounds.left()-start.x())/direction.x());
+    if (qAbs(direction.y())>0.00001)
+        length=qMin(length,(direction.y()>0?bounds.bottom()-start.y():bounds.top()-start.y())/direction.y());
+    return start+direction*qMax(0.0,length);
+}
 QRect interactionScreen(const QVector<QRect> &screens, const QPointF &pointer, const QRectF &selection) {
     QRect best;
     qreal largest=-1;

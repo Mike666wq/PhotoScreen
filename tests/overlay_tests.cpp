@@ -1,4 +1,5 @@
 #include "captureoverlay.h"
+#include "core/interaction.h"
 #include <QApplication>
 #include <QFrame>
 #include <QInputMethodEvent>
@@ -107,12 +108,20 @@ private slots:
         QTest::mouseClick(overlay->findChild<QToolButton *>("tool_3"),Qt::LeftButton);
         QCOMPARE(width->value(),12);
         QTest::qWait(450);
-        const QStringList keysBefore=settings.allKeys();
+        QTRY_COMPARE_WITH_TIMEOUT(overlay->persistedLineWidth(),12,2000);
+        auto toolSettings=[] {
+            QSettings settings;
+            settings.beginGroup(QStringLiteral("annotation/tools"));
+            QVariantMap values;
+            for (const QString &key : settings.allKeys()) values.insert(key,settings.value(key));
+            return values;
+        };
+        const QVariantMap preferencesBefore=toolSettings();
         QTest::mouseClick(overlay->findChild<QToolButton *>("tool_0"),Qt::LeftButton);
         QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(50,200));
         QCOMPARE(width->value(),2);
         QTest::qWait(450);
-        QCOMPARE(settings.allKeys(),keysBefore);
+        QCOMPARE(toolSettings(),preferencesBefore);
         QCOMPARE(settings.value("annotation/tools/arrow/width").toInt(),12);
         QCOMPARE(settings.value("annotation/tools/rectangle/width").toInt(),2);
         QCOMPARE(settings.value("annotation/tools/arrow/color").toString(),QStringLiteral("#ff3b3b"));
@@ -250,6 +259,75 @@ private slots:
         QCOMPARE(overlay->annotations().first().text,full);
         QCOMPARE(overlay->annotations().first().rect.topLeft(),QPointF(40,130));
         QVERIFY(overlay->annotations().first().rect.bottom()>160);
+    }
+    void toolShortcutsConstrainDrawingAndNudgeSelectedObject() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        QTest::keyClick(overlay,Qt::Key_A);
+        QVERIFY(overlay->findChild<QToolButton *>("tool_3")->isChecked());
+        QTest::mousePress(overlay,Qt::LeftButton,Qt::ShiftModifier,QPoint(50,100));
+        QTest::mouseRelease(overlay,Qt::LeftButton,Qt::ShiftModifier,QPoint(310,180));
+        QCOMPARE(overlay->annotations().size(),1);
+        const AnnotationId arrow=overlay->annotations().first().id;
+        const QRectF before=overlay->annotations().first().rect;
+        QVERIFY(qAbs(before.height())<0.001);
+        QTest::keyClick(overlay,Qt::Key_V);
+        QTest::keyClick(overlay,Qt::Key_Right);
+        QTest::keyClick(overlay,Qt::Key_Down,Qt::ShiftModifier);
+        QCOMPARE(overlay->annotations().first().id,arrow);
+        QCOMPARE(overlay->annotations().first().rect.topLeft(),before.topLeft()+QPointF(1,10));
+        QTest::keyClick(overlay,Qt::Key_R);
+        QTest::mousePress(overlay,Qt::LeftButton,Qt::ShiftModifier,QPoint(100,150));
+        QTest::mouseRelease(overlay,Qt::LeftButton,Qt::ShiftModifier,QPoint(240,210));
+        const QRectF square=overlay->annotations().last().rect.normalized();
+        QCOMPARE(square.width(),square.height());
+        QVERIFY(overlay->findChild<QToolButton *>("tool_1")->isChecked());
+    }
+    void escapeDuringDragRestoresSelectionAndLeavesHistoryUntouched() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        QSignalSpy finished(overlay,&CaptureOverlay::finished);
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        QTest::keyClick(overlay,Qt::Key_R); selectArea(overlay,QPoint(100,100),QPoint(250,180));
+        QTest::keyClick(overlay,Qt::Key_V);
+        const QRectF before=overlay->annotations().first().rect; const int depth=overlay->undoDepth();
+        QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(100,140));
+        QTest::mouseMove(overlay,QPoint(60,140));
+        QTest::keyClick(overlay,Qt::Key_Escape);
+        QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(60,140));
+        QCOMPARE(overlay->annotations().first().rect,before); QCOMPARE(overlay->undoDepth(),depth); QCOMPARE(finished.count(),0);
+        QTest::mouseMove(overlay,QPoint(10,10));
+        QCOMPARE(overlay->cursor().shape(),Qt::SizeFDiagCursor);
+    }
+    void rectangleSideAndTextWidthHandlesWork() {
+        auto *overlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(510,400));
+        QTest::keyClick(overlay,Qt::Key_R); selectArea(overlay,QPoint(100,100),QPoint(250,180)); QTest::keyClick(overlay,Qt::Key_V);
+        selectArea(overlay,QPoint(100,140),QPoint(60,140));
+        QCOMPARE(overlay->annotations().first().rect.normalized(),QRectF(60,100,190,80));
+        QTest::keyClick(overlay,Qt::Key_T); QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,230));
+        auto *editor=overlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QInputMethodEvent input; input.setCommitString(QStringLiteral("Text wraps at its layout width and keeps the same font size.")); QApplication::sendEvent(editor,&input);
+        QTest::keyClick(editor,Qt::Key_Escape); QTest::keyClick(overlay,Qt::Key_V);
+        const Annotation original=overlay->annotations().last();
+        const QPoint handle=annotationHandles(original).last().toPoint();
+        selectArea(overlay,handle,handle+QPoint(120,0));
+        QCOMPARE(overlay->annotations().last().fontSize,original.fontSize);
+        QVERIFY(overlay->annotations().last().rect.width()>original.rect.width());
+    }
+    void keyboardNudgeMovesCropAndTextLettersStayInEditor() {
+        ScreenFrame f=frame(); f.screens[0].image.setPixelColor(22,40,Qt::blue);
+        QImage copied;
+        auto *overlay=new CaptureOverlay(f,QGuiApplication::primaryScreen(),[&](const QImage &image,QString *) { copied=image; return true; });
+        overlay->show(); selectArea(overlay,QPoint(10,10),QPoint(210,110));
+        QTest::keyClick(overlay,Qt::Key_Right); QTest::keyClick(overlay,Qt::Key_Down,Qt::ShiftModifier);
+        QTest::keyClick(overlay,Qt::Key_Return);
+        QCOMPARE(copied.size(),QSize(400,200)); QCOMPARE(copied.pixelColor(0,0),QColor(Qt::blue));
+        auto *textOverlay=new CaptureOverlay(frame(),QGuiApplication::primaryScreen(),[](const QImage &,QString *) { return true; });
+        textOverlay->show(); selectArea(textOverlay,QPoint(10,10),QPoint(510,400)); QTest::keyClick(textOverlay,Qt::Key_T);
+        QTest::mouseClick(textOverlay,Qt::LeftButton,Qt::NoModifier,QPoint(40,50));
+        auto *editor=textOverlay->findChild<QTextEdit *>("annotationTextEditor"); QVERIFY(editor);
+        QTest::keyClicks(editor,QStringLiteral("vroaptm"));
+        QCOMPARE(editor->toPlainText(),QStringLiteral("vroaptm")); QVERIFY(textOverlay->findChild<QToolButton *>("tool_5")->isChecked());
     }
     void releasePositionAndCopy() {
         QImage copied; int writes=0;

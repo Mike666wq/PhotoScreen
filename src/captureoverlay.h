@@ -110,7 +110,9 @@ private:
     void finishCapture();
     void cancelCapture();
     void clearSelection();
-    void updateDrag(const QPointF &point);
+    void updateDrag(const QPointF &point, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
+    void updatePointerCursor(const QPointF &point);
+    void cancelDrag();
     QPointF boundedPoint(const QPointF &p) const;
     // 覆盖层局部逻辑坐标 → 虚拟桌面逻辑坐标。
     QPointF toVirtual(const QPointF &local) const { return local + m_frame.virtualGeometry.topLeft(); }
@@ -131,6 +133,8 @@ private:
     QRectF m_hoverWindow;
     QPointF m_pointer, m_press;
     QRectF m_startRect;
+    QRectF m_pressSelection;
+    AnnotationId m_pressSelectedId = 0;
     Drag m_drag = Drag::None;
     int m_handle = -1;
     AnnotationId m_selectedId = 0;

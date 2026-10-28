@@ -36,6 +36,27 @@ private slots:
             QCOMPARE(metrics.pixelSize,renderSelection(screens,selection,{}).size());
         }
     }
+    void constrainedGeometryAndObjectHandles() {
+        const QRectF bounds(-100,-100,400,400);
+        const QPointF start(20,30);
+        for (const QPointF &point : {QPointF(100,50),QPointF(-80,10),QPointF(40,-70),QPointF(500,500)}) {
+            const QPointF end=constrainedSquareEnd(start,point,bounds);
+            QVERIFY(qAbs(qAbs(end.x()-start.x())-qAbs(end.y()-start.y()))<0.001);
+            QVERIFY(bounds.contains(end));
+            const QPointF arrow=constrainedArrowEnd(start,point,bounds);
+            const QPointF delta=arrow-start;
+            QVERIFY(qAbs(delta.x())<0.001 || qAbs(delta.y())<0.001 || qAbs(qAbs(delta.x())-qAbs(delta.y()))<0.001);
+            QVERIFY(bounds.adjusted(-0.001,-0.001,0.001,0.001).contains(arrow));
+        }
+        Annotation rect; rect.rect=QRectF(10,20,100,60);
+        QCOMPARE(annotationHandles(rect).size(),8);
+        QCOMPARE(hitHandle(annotationHandles(rect),QPointF(10,50)),7);
+        rect.tool=Tool::Text; QCOMPARE(annotationHandles(rect).size(),2);
+        rect.tool=Tool::Arrow; QCOMPARE(annotationHandles(rect).first(),rect.rect.topLeft());
+        const QRectF resized=resizeFromHandle(QRectF(10,20,100,60),7,QPointF(0,50),bounds);
+        QCOMPARE(resized,QRectF(0,20,110,60));
+        QVERIFY(resizeFromHandle(QRectF(10,20,100,60),0,QPointF(110,80),bounds).width()>=2);
+    }
     void scaling_data() {
         QTest::addColumn<QSizeF>("logical"); QTest::addColumn<QSize>("pixels");
         QTest::addColumn<QRectF>("selection"); QTest::addColumn<QRect>("expected");

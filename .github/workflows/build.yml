@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: '留空构建试用包；填 vX.Y.Z 创建草稿 Release'
+        description: '留空构建试用包；填 vX.Y.Z 直接发布 Release'
         type: string
         required: false
         default: ''
@@ -116,7 +116,7 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  draft-release:
+  release:
     if: (startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs: build
     runs-on: ubuntu-24.04
@@ -128,7 +128,7 @@ jobs:
           pattern: PhotoScreen-*
           path: artifacts
           merge-multiple: true
-      - name: Create draft release
+      - name: Create release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -151,6 +151,6 @@ jobs:
           installers=(*-setup.exe *.dmg)
           [[ ${#installers[@]} -eq 2 ]] || { echo 'Expected exactly one installer per platform.' >&2; exit 1; }
           sha256sum "${installers[@]}" > SHA256SUMS.txt
-          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --draft --title "PhotoScreen $RELEASE_TAG" \
-            --notes '请先在 Mac 和 Windows 实机安装验收，再发布此草稿。Mac 为 ad-hoc 签名，Windows 安装器未签名。' \
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "PhotoScreen $RELEASE_TAG" \
+            --notes '直接发布的版本。Mac 为 ad-hoc 签名，Windows 安装器未签名，首次运行可能被系统提示或拦截。自动测试覆盖核心逻辑、覆盖层交互与合成图像回归；真实桌面捕获、系统录屏授权、真实中文输入法、跨应用粘贴、混合缩放、安装升级与资源占用仍未验证，不代表已通过实机验收。验收清单见 docs/acceptance.md。' \
             "${installers[@]}" SHA256SUMS.txt

@@ -75,7 +75,7 @@ cmake -S . -B build && cmake --build build   # ❌ 不要在本地跑
 - `ctest` 四项：`photoscreen_core` / `photoscreen_overlay` / `photoscreen_visual_report` / `photoscreen_mac_image`（macOS 才有第四项）
 - 每个 QTest 目标通过 `-o <build>/reports/<name>.txt,txt` 把逐条 PASS/FAIL 落盘；**Windows 上 `ctest` 不会回显 QTest 的标准输出，定位失败用例只能看这些日志文件**（CI 的 "Show QTest logs" 步骤会把它们贴进构建日志，证据包里也有一份）
 - 每次构建上传 `Regression-*` 证据包（测试结果 + 合成图像报告 + QTest 日志）
-- `main` / PR / 手动触发产出试用包；`vX.Y.Z` 标签产出草稿 Release
+- `main` / PR / 手动触发产出试用包；`vX.Y.Z` 标签或填写 `release_tag` 的手动触发**直接发布** Release（不再使用草稿）。发布后仍需按 `docs/acceptance.md` 做实机验收，未验证项不得标注为通过，发现问题发新版本。
 
 **报告口径**：CI 通过 ≠ 真机通过。真机截图、系统屏幕录制授权、跨应用粘贴、真实桌面缩放对齐、开机启动、升级卸载、连续截图资源占用，**一律标注为「未验证」**，直到 `docs/acceptance.md` 记录填写完毕。
 
@@ -88,7 +88,7 @@ cmake -S . -B build && cmake --build build   # ❌ 不要在本地跑
 - 分支命名：`codex/<slug>`，例如 `codex/fix-p0-core`
 - 一次 PR 只做 1–2 个缺陷，便于回归定位
 - 不直接向 `main` 推送
-- 不改动远端已有分支和草稿 Release
+- 不改动远端已有分支和已发布 Release
 - 每个 PR 描述必须写三段：**改了什么 / 用什么命令验证的 / 哪些仍未验证**
 
 ## 代码风格
@@ -113,7 +113,7 @@ cmake -S . -B build && cmake --build build   # ❌ 不要在本地跑
 
 `docs/acceptance.md` 是实机验收清单，覆盖截图权限、窗口识别、多显示器与缩放、标注与中文输入、剪贴板、升级卸载、开机启动、资源占用。
 
-**Actions 的自动测试不替代真实桌面验收。** 每次发布前需在 Mac 和 Windows 实机走完清单并填写表格。
+**Actions 的自动测试不替代真实桌面验收。** 发布不再等待实机验收：每次发布后仍需在 Mac 和 Windows 实机走完清单并填写表格，未验证项保持「未验证」口径。
 
 ## v1.2 交互与渲染契约
 

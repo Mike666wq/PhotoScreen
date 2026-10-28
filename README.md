@@ -29,7 +29,7 @@ Mac 首次截图需要在系统设置中允许屏幕录制；授权后如仍无�
 
 ## GitHub Actions
 
-所有构建和打包在 GitHub Actions 运行。提交到 `main`、提交 PR 或手动运行可获取保留 14 天的双平台 ZIP、EXE 和 DMG 试用包。推送 `vX.Y.Z` 标签，或手动运行工作流并填写 `release_tag`，两端构建 EXE/DMG 并创建草稿 Release。下载草稿中的同一批文件，在 Mac 和 Windows 实机验收后再发布草稿。
+所有构建和打包在 GitHub Actions 运行。提交到 `main`、提交 PR 或手动运行可获取保留 14 天的双平台 ZIP、EXE 和 DMG 试用包。推送 `vX.Y.Z` 标签，或手动运行工作流并填写 `release_tag`，两端构建 EXE/DMG 并**直接发布** Release。发布后仍需在 Mac 和 Windows 实机按下面的验收清单自测；未通过的部分按「未验证」记录，修复后发新版本。
 
 验收覆盖：截图权限、窗口识别、不同缩放与多显示器、标注与中文输入、剪贴板粘贴和覆盖、安装升级卸载、开机启动，以及连续截图后的资源占用。Actions 的自动测试不替代真实桌面验收。
 
